@@ -12,8 +12,6 @@ const places = {
 };
 
 const $ = id => document.getElementById(id);
-const SAVE_KEY = 'theLastHearth.villageEngine.2';
-const LEGACY_SAVE_KEY = 'emberhollow.villageEngine.2';
 const phase = () => village.opening?.phase;
 const raidDay = () => village.raidDay === undefined ? RAID_DAY : village.raidDay;
 const fmt = value => String(Number(value.toFixed(2)));
@@ -33,6 +31,11 @@ let trainingDraft = false;
 let advancementDraft = false;
 let dragonDraft = null;
 let visited = new Set();
+let activeProfile = null;
+let playMode = 'title';
+let lastSavedProgress = null;
+let saveIssue = '';
+let campaignPane = 'town';
 
 const lessons = [
   ['Look around the village', 'Select the Cottages on the map. The inspector shows the details of the place you selected.', 'homes'],
@@ -66,7 +69,7 @@ function freeWorkers() {
 }
 
 function grainYield(farmers = village.farmers) {
-  return VillageEngine.grainYield(farmers);
+  return VillageEngine.grainYield(farmers, village.altarBlessing);
 }
 
 function provisionsMade(bakers = village.bakers) {
@@ -98,6 +101,10 @@ function note(message) {
 }
 
 function open(place) {
+  if (village.campaign && places[place]) {
+    const mapPane = { hall:'town', homes:'town', barracks:'army', wall:'army', roost:'dragon' };
+    return openCampaign(mapPane[place] ?? 'economy');
+  }
   if (place !== selected) {
     trainingDraft = false;
     advancementDraft = false;
@@ -154,6 +161,7 @@ async function resolveRaid() {
     if (village !== raidingVillage) return;
     VillageEngine.applyRaid(village, result);
     if (village.guide === 11) nextLesson();
+    persistCampaign();
     selected = 'report';
     note(result.status === 'stall' ? 'Encounter paused without a verdict.' : 'Raid resolved. Time is paused.');
   } catch {
@@ -168,25 +176,38 @@ async function resolveRaid() {
 }
 
 function canAdvance() {
+  if (village.campaign) return Campaign.active(village.campaign);
   return !village.economicDefeat && !raidPending() && !['stall', 'defeat'].includes(village.result?.status)
     && (!village.opening || !['stockpile', 'scout', 'chapter-complete'].includes(phase()))
     && (!guideActive() || village.guide === 11 || (village.guide === 9 && !visited.has('day')));
 }
 
 function canResume() {
+  if (village.campaign) return Campaign.active(village.campaign);
   if (!canAdvance() || (guideActive() && village.guide !== 11)) return false;
   if (!village.opening || ['prepare', 'aftermath', 'memory'].includes(phase())) return true;
   return Object.values(village.opening.plots).some(plot => !plot.ready);
 }
 
 function advance() {
+  if (village.campaign) {
+    const c = village.campaign;
+    const result = Campaign.advance(c);
+    if (!result) return;
+    syncCampaign();
+    if (result.pause) stop();
+    if (result.pane) return openCampaign(result.pane);
+    if (c.status !== 'active') return openCampaign('records');
+    render();
+    return;
+  }
   const previousPhase = phase();
   if (!canAdvance()) return;
   lastStaffChange = null;
   const { events, firstMissedRation, impendingLoss, firstHungerLoss, dragonDied } = VillageEngine.advance(village);
   if (events.length) note(events.join(' '));
   if (phase() !== previousPhase || !canResume()) stop();
-  if (phase() === 'chapter-complete') selected = 'hall';
+  if (phase() === 'chapter-complete') return beginCampaign();
   const pausedForFood = firstMissedRation || impendingLoss || firstHungerLoss || dragonDied || village.economicDefeat;
   if (pausedForFood) {
     stop();
@@ -200,6 +221,7 @@ function advance() {
     visited.clear();
     visited.add('day');
   }
+  persistCampaign();
   if (raidPending() && !pausedForFood) return resolveRaid();
   render();
 }
@@ -226,7 +248,7 @@ function guideTarget() {
 }
 
 function renderGuide() {
-  if (village.economicDefeat) {
+  if (village.economicDefeat || village.campaign) {
     $('guide').hidden = true;
     return;
   }
@@ -527,7 +549,7 @@ function reportBody() {
       button('overview', 'Return to Village Overview'),
       ...(phase() === 'aftermath' && result.status === 'won' ? [button('memory', 'Recall the first memory')] : [])
     ])}
-    <small class="battle-legend">Run 10 combat · ${result.engine} · ${village.opening ? 'Opening' : 'Checkpoint'} seed ${result.seed}</small>`;
+    <small class="battle-legend">Run 10 combat · ${escapeText(result.engine)} · ${village.opening ? 'Opening' : 'Checkpoint'} seed ${result.seed}</small>`;
 }
 
 function battleComparison(result) {
@@ -611,7 +633,7 @@ function townOpening() {
     + row('Chief', escapeText(village.chiefName)) + row('Village level', village.level);
   const preview = '<h3>Level 2 unlock preview</h3>' + unlockIcons(2) + button('tech-tree', 'View tech tree');
   if (village.level === 2) {
-    return identity + '<h3>Opening chapter complete</h3><p>The settlement has reached Level 2. These systems belong to the next playable chapter.</p>' + preview;
+    return identity + button('begin-campaign', 'Continue to the campaign') + preview;
   }
   if (phase() === 'stockpile') return identity + button('claim-stockpile', 'Claim stockpile') + preview;
   if (village.advancementDay) return identity + row('Level 2 ready on', `Day ${village.advancementDay}`) + preview;
@@ -644,10 +666,15 @@ function techTree() {
     <thead><tr><th scope="col">Level</th><th scope="col">Unlocks</th><th scope="col">Building cap</th></tr></thead>
     <tbody>${[3,6,9,10].map((cap, i) => `<tr><th scope="row">${i + 1}</th>
       <td>${unlockIcons(i + 1)}</td><td>${cap}</td></tr>`).join('')}</tbody></table>
-    <p>The opening chapter ends when the village reaches Level 2. Later systems are shown here as a preview.</p>`;
+    <p>Reaching Level 4 starts the final invasion countdown.</p>`;
 }
 
 function inspector() {
+  if (selected === 'campaign') return CampaignView.renderPane(village.campaign, campaignPane);
+  if (selected === 'opening-altar') return row('Blessing', Campaign.blessings[village.altarBlessing] ?? 'Choose a blessing')
+    + row('Hero recruitment', 'First slot at Village Level 2')
+    + Object.entries(Campaign.blessings).map(([key,label])=>button(`opening-bless:${key}`,label,
+      village.altarBlessing===key || village.day<(village.altarLockedUntil??0) || raidPending())).join('');
   if (village.opening && OPENING_BUILDINGS[selected] && !village.opening.plots[selected]?.ready) return openingPlot(selected);
   switch (selected) {
     case 'homes':
@@ -791,24 +818,31 @@ function placeInspector() {
 }
 
 function render() {
-  $('clock').textContent = `Day ${village.day} · ${timer ? 'Running' : 'Paused'}`;
+  const c = village.campaign;
+  $('campaignButton').hidden = !c;
+  $('altarButton').hidden = Boolean(c) || !village.opening;
+  $('encounterAlert').hidden = !c?.event;
+  $('encounterAlert').textContent = c?.event ? `Encounter · due Day ${c.event.due}` : '';
+  $('clock').textContent = `Day ${c?.day ?? village.day} · ${timer ? 'Running' : 'Paused'}`;
   $('time').textContent = timer ? 'Pause' : 'Resume';
   $('time').disabled = !timer && !canResume();
   $('time').title = !canResume() && !timer && village.opening && !village.result
     ? 'Finish the current village task or use Next day where available.' : '';
   const forecast = VillageEngine.foodForecast(village);
   const foodAlert = $('foodAlert');
-  foodAlert.hidden = phase() === 'stockpile' || (!village.economicDefeat && !Object.values(village.hunger).some(Boolean) && forecast.shortageIn > 3);
-  foodAlert.textContent = village.economicDefeat ? 'Settlement lost'
+  foodAlert.hidden = c ? !c.shortage : phase() === 'stockpile' || (!village.economicDefeat && !Object.values(village.hunger).some(Boolean) && forecast.shortageIn > 3);
+  foodAlert.textContent = c ? 'Missed rations' : village.economicDefeat ? 'Settlement lost'
     : Object.values(village.hunger).some(Boolean) ? 'Missed rations' : `Provisions short in ${forecast.shortageIn}d`;
   $('nextDay').disabled = Boolean(timer) || !canAdvance();
   $('stocks').innerHTML = [
-    ['Grain', fmt(village.grain)], ['Provisions', fmt(village.food)], ['Timber', village.timber],
-    ['Stone', village.stone], ['Free workers', freeWorkers()], ['Spearmen', village.spearmen]
+    ['Grain', fmt(c?.stock.grain ?? village.grain)], ['Provisions', fmt(c?.stock.food ?? village.food)],
+    ['Timber', fmt(c?.stock.timber ?? village.timber)], ['Stone', fmt(c?.stock.stone ?? village.stone)],
+    ['Free workers', c ? Campaign.free(c) : freeWorkers()], [c ? 'Army' : 'Spearmen', c ? Campaign.troops(c) : village.spearmen]
   ].map(([name, value]) => `<span class="stock" tabindex="0" data-tooltip="${name}" aria-label="${name}: ${value}" role="img">
-    <svg viewBox="0 0 24 24" aria-hidden="true">${stockIcons[name]}</svg><b aria-hidden="true">${value}</b>
+    <svg viewBox="0 0 24 24" aria-hidden="true">${stockIcons[name] ?? stockIcons.Spearmen}</svg><b aria-hidden="true">${value}</b>
   </span>`).join('');
-  $('warning').textContent = phase() === 'scout' ? 'Scout report' : !raidDay() ? 'Valley watch' : village.result ? 'First raid · View report' : raidPending() ? 'First raid · Resolve encounter' : `Raid on day ${raidDay()} · ${raidDay() - village.day} ${raidDay() - village.day === 1 ? 'day' : 'days'} to prepare`;
+  $('warning').textContent = c ? (c.status!=='active' ? 'Campaign outcome'
+    : c.threat ? `Defense · Day ${c.threat.day}` : `Valley watch · Day ${Campaign.nextAttack(c)}`) : phase() === 'scout' ? 'Scout report' : !raidDay() ? 'Valley watch' : village.result ? 'First raid · View report' : raidPending() ? 'First raid · Resolve encounter' : `Raid on day ${raidDay()} · ${raidDay() - village.day} ${raidDay() - village.day === 1 ? 'day' : 'days'} to prepare`;
 
   renderGuide();
   renderMap();
@@ -816,12 +850,14 @@ function render() {
   const panel = $('panel');
   $('layout').classList.toggle('inspecting', Boolean(selected));
   panel.hidden = !selected;
-  panel.classList.toggle('battle-panel', selected === 'report');
+  panel.classList.toggle('battle-panel', selected === 'report' || selected === 'campaign');
+  panel.classList.toggle('campaign-panel', selected === 'campaign');
   panel.classList.toggle('wall-panel', selected === 'wall');
   const panelAnchor = places[guideTarget()] ?? places[selected];
   panel.classList.toggle('left', Boolean(panelAnchor && panelAnchor[1] > 65));
   if (!selected) return;
-  const title = selected === 'report' ? 'Battle report'
+  const title = selected === 'campaign' ? CampaignView.names[campaignPane]
+    : selected === 'opening-altar' ? 'Altar' : selected === 'report' ? 'Battle report'
     : selected === 'warning' ? 'Raid warning' : selected === 'tech' ? 'Tech tree' : selected === 'food' ? (village.economicDefeat ? 'Settlement lost' : 'Food and rations') : places[selected][0];
   const focused = panel.contains(document.activeElement) ? document.activeElement.dataset.action : null;
   const scroll = panel.scrollTop;
@@ -834,59 +870,198 @@ function render() {
   }
 }
 
-function save() {
+function currentProgress() {
+  return { village, visited: [...visited], speed };
+}
+
+function persistCampaign(manual = false) {
+  if (playMode !== 'campaign') return false;
+  const progress = currentProgress();
+  if (!activeProfile) {
+    if (manual) $('menuStatus').textContent = 'Choose a profile or export this game as a backup.';
+    return false;
+  }
+  const serialized = JSON.stringify(progress);
+  if (!manual && serialized === lastSavedProgress) return true;
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ village, visited: [...visited], speed }));
-    $('menuStatus').textContent = 'Village and tutorial progress saved.';
-  } catch {
-    $('menuStatus').textContent = 'This browser could not save the village.';
+    activeProfile = VillageSaves.save(activeProfile, progress);
+    lastSavedProgress = serialized;
+    saveIssue = '';
+    if (manual) $('menuStatus').textContent = `Saved to ${activeProfile.name} · Day ${village.day}.`;
+    return true;
+  } catch (error) {
+    const previousIssue = saveIssue;
+    saveIssue = error.name === 'SaveConflict' ? error.message : 'This browser could not save. Export this game to keep your progress.';
+    if (manual) $('menuStatus').textContent = saveIssue;
+    else if (saveIssue !== previousIssue) note(saveIssue);
+    return false;
   }
 }
 
-function load() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SAVE_KEY) ?? localStorage.getItem(LEGACY_SAVE_KEY));
-    if (saved?.village?.version !== 2 || !Array.isArray(saved.visited)) throw new Error('Invalid save');
-    stop();
-    village = VillageEngine.restore(saved.village);
-    scoutStrength = null;
-    trainingDraft = false;
-    advancementDraft = false;
-    dragonDraft = null;
-    farmerDraft = false;
-    raidError = false;
-    visited = new Set(saved.visited);
-    speed = [0.5, 1, 2, 4].includes(saved.speed) ? saved.speed : 1;
-    $('speed').value = String(speed);
-    selected = village.economicDefeat || Object.values(village.hunger).some(Boolean) ? 'food' : raidPending() ? 'warning' : village.guide === 12 && village.result ? 'report' : null;
-    lastStaffChange = null;
-    if ($('settings').open) $('settings').close();
-    note('Village and tutorial progress restored.');
-    return true;
-  } catch {
-    $('menuStatus').textContent = 'No readable village save was found.';
-    if (!$('settings').open && !$('story').open) note('No readable village save was found.');
+function mayLeaveCampaign() {
+  return playMode !== 'campaign' || persistCampaign()
+    || window.confirm('This session has not been saved. Leave it without saving?');
+}
+
+function resetInteraction() {
+  stop();
+  scoutStrength = null;
+  trainingDraft = false;
+  advancementDraft = false;
+  dragonDraft = null;
+  farmerDraft = false;
+  raidError = false;
+  lastStaffChange = null;
+}
+
+function useProfile(profile, progress) {
+  activeProfile = profile;
+  saveIssue = '';
+  playMode = progress ? 'campaign' : 'title';
+  lastSavedProgress = progress ? JSON.stringify(progress) : null;
+  resetInteraction();
+  village = progress?.village ?? VillageEngine.newVillage();
+  if (village.opening?.phase === 'chapter-complete' && !village.campaign) Campaign.start(village);
+  campaignPane = village.campaign?.status === 'active' ? 'town' : 'records';
+  visited = new Set(progress?.visited);
+  speed = progress?.speed ?? 1;
+  $('speed').value = String(speed);
+  selected = village.campaign ? 'campaign' : village.economicDefeat || Object.values(village.hunger).some(Boolean) ? 'food'
+    : raidPending() ? 'warning' : village.result && phase() === 'aftermath' ? 'report' : null;
+  for (const id of ['profiles', 'settings', 'story']) {
+    if ($(id).open) $(id).close();
   }
+  render();
+  if (progress) note(`${profile.name} · Day ${village.day} restored.`);
+  else showPrologue();
+}
+
+function showProfiles() {
+  stop();
+  render();
+  const list = $('profileList');
+  $('profileStatus').textContent = '';
+  list.replaceChildren();
+  try {
+    const { profiles, unreadable } = VillageSaves.list();
+    if (!profiles.length) list.textContent = 'No profiles yet.';
+    if (unreadable) $('profileStatus').textContent = 'Some browser profiles could not be read.';
+    for (const profile of profiles) {
+      const row = document.createElement('div');
+      row.className = 'profile-row';
+      const saved = profile.progress?.village;
+      const day = Number.isSafeInteger(saved?.day) ? ` · Day ${saved.day}` : '';
+      const savedAt = new Date(profile.savedAt);
+      const date = profile.savedAt && Number.isFinite(savedAt.getTime()) ? ' · ' + savedAt.toLocaleString() : '';
+      const detail = saved ? escapeText(saved.villageName ?? DEFAULT_VILLAGE_NAME) + day + escapeText(date) : 'Ready for a new story';
+      const id = escapeText(profile.id);
+      row.innerHTML = `<span><strong>${escapeText(profile.name)}</strong><small>${detail}</small></span>
+        <div class="actions">${button(`profile-open:${id}`, saved ? 'Continue' : 'Start story')}
+          ${saved ? button(`profile-export:${id}`, 'Export backup') : ''}</div>`;
+      list.append(row);
+    }
+  } catch {
+    $('profileStatus').textContent = 'Browser storage is unavailable. You can play and export a backup from the village menu.';
+  }
+  $('createProfile').reset();
+  $('profiles').showModal();
+}
+
+function exportProgress(name, progress) {
+  const file = new Blob([VillageSaves.encode(name, progress)], { type: 'application/json' });
+  const url = URL.createObjectURL(file);
+  const download = document.createElement('a');
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  download.href = url;
+  download.download = `emberhollow-${slug || 'village'}.json`;
+  download.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function profileAction(action) {
+  const [operation, id] = action.split(':');
+  try {
+    const profile = VillageSaves.read(id);
+    if (!profile) throw new Error('This profile could not be read.');
+    if (operation === 'profile-export') return exportProgress(profile.name, VillageSaves.validateProgress(profile.progress));
+    if (resolvingRaid) throw new Error('Wait for the raid to finish before switching profiles.');
+    if (mayLeaveCampaign()) {
+      // A save from this tab may have changed the selected profile while leaving.
+      const latest = VillageSaves.read(id);
+      if (!latest) throw new Error('This profile could not be read.');
+      useProfile(latest, latest.progress ? VillageSaves.validateProgress(latest.progress) : null);
+    }
+  } catch (error) {
+    $('profileStatus').textContent = error.message;
+  }
+}
+
+function syncCampaign() {
+  village.day = village.campaign.day;
+  persistCampaign();
+}
+
+function beginCampaign() {
+  stop();
+  Campaign.start(village);
+  syncCampaign();
+  openCampaign('journal');
+}
+
+function openCampaign(pane) {
+  if (!village.campaign || !Object.hasOwn(CampaignView.names,pane)) return;
+  selected = 'campaign';
+  campaignPane = pane;
+  render();
+  if (pane==='encounters' && village.campaign.event) CampaignView.discoverMedia(village.campaign.event.id);
+}
+
+function campaignCommand(action) {
+  const [,verb,key] = action.split(':');
+  if (verb==='close-clip') return $('encounterMedia').close();
+  const c = village.campaign;
+  if (!c) return;
+  if (verb==='pane') return openCampaign(key);
+  if (verb==='clip') return CampaignView.clip(key);
+  if (verb==='first-report') return open('report');
+  if (verb==='restore' && (!c.checkpoints[key] || !window.confirm(`Resume Level ${key} from its saved milestone? Current progress will be replaced.`))) return;
+  const route = verb==='event' && key!=='pass' && c.event ? CampaignEvents.roster[c.event.id]?.pane : null;
+  if (!Campaign.action(c,verb,key)) {
+    note('That action is not available right now.');
+    return render();
+  }
+  syncCampaign();
+  if (verb==='fight') return openCampaign('records');
+  if (verb==='restore') { stop(); return openCampaign('town'); }
+  return openCampaign(route ?? campaignPane);
 }
 
 function command(action) {
+  if (action.startsWith('campaign:')) return campaignCommand(action);
+  if (action==='begin-campaign' && phase()==='chapter-complete') return beginCampaign();
+  if (action==='opening-altar' && village.opening) return open('opening-altar');
+  if (action.startsWith('opening-bless:') && village.opening && !village.campaign && !raidPending()) {
+    const key=action.split(':')[1];
+    if (!Object.hasOwn(Campaign.blessings,key) || village.day < (village.altarLockedUntil??0)) return;
+    village.altarBlessing=key; village.altarLockedUntil=village.day+5;
+    return render();
+  }
   if (action === 'overview') return open(null);
-  if (action === 'food-alert') return open('food');
+  if (action === 'food-alert') return village.campaign ? openCampaign('economy') : open('food');
   if (action === 'retry-scout') return fetchScoutReport();
   if (action === 'tech-tree') return open('tech');
-  if (action === 'warning') return open(village.result ? 'report' : 'warning');
+  if (action === 'warning') return village.campaign ? openCampaign(village.campaign.status==='active'?'threat':'records') : open(village.result ? 'report' : 'warning');
   if (action === 'report' && village.result) return open('report');
   if (places[action]) return open(action);
   if (action === 'nextDay') return advance();
   if (action === 'time') return toggleTime();
-  if (action === 'save') return save();
+  if (action === 'save') return persistCampaign(true);
+  if (action === 'profiles') return showProfiles();
+  if (action === 'close-profiles') return $('profiles').close();
+  if (action.startsWith('profile-')) return profileAction(action);
+  if (action === 'export-session' && playMode === 'campaign') return exportProgress(activeProfile?.name ?? village.chiefName, currentProgress());
   if (action === 'closeMenu') return $('settings').close();
   if (/^story-[0-3]$/.test(action)) return showPrologue(Number(action.slice(-1)));
-  if (action === 'story-load') {
-    if (load()) $('story').close();
-    else $('storyStatus').textContent = 'No readable village save was found.';
-    return render();
-  }
   if (action === 'return-memory') {
     $('story').close();
     return open('hall');
@@ -894,26 +1069,24 @@ function command(action) {
 
   if (resolvingRaid) return;
   if (action === 'retry-raid') return resolveRaid();
-  if (raidPending() && !['load', 'restart', 'checkpoint'].includes(action)) return;
-  if ((village.economicDefeat || ['defeat', 'stall'].includes(village.result?.status)) && !['load', 'restart', 'checkpoint', 'skip'].includes(action)) return;
-  if (action === 'load') load();
+  if (raidPending() && !['restart', 'checkpoint'].includes(action)) return;
+  if ((village.economicDefeat || ['defeat', 'stall'].includes(village.result?.status)) && !['restart', 'checkpoint', 'skip'].includes(action)) return;
   if (action === 'restart' || action === 'checkpoint') {
-    stop();
+    if (!mayLeaveCampaign()) return;
+    resetInteraction();
+    playMode = action === 'checkpoint' ? 'practice' : 'title';
     village = VillageEngine.newVillage();
-    scoutStrength = null;
-    if (action === 'checkpoint') village.guide = lessons.length;
-    farmerDraft = false;
-    raidError = false;
-    trainingDraft = false;
-    advancementDraft = false;
-    dragonDraft = null;
+    if (playMode === 'practice') {
+      activeProfile = null;
+      lastSavedProgress = null;
+      village.guide = lessons.length;
+    }
     selected = null;
-    lastStaffChange = null;
     visited.clear();
     if ($('settings').open) $('settings').close();
     if ($('story').open) $('story').close();
     if (action === 'restart') showPrologue();
-    note(action === 'checkpoint' ? 'First raid checkpoint loaded.' : 'New story.');
+    else note('First raid practice loaded.');
   }
   if (action === 'show-hints' && village.opening) {
     village.opening.hints = true;
@@ -1004,6 +1177,7 @@ for (const [place, [name, x, y, points]] of Object.entries(places)) {
 $('map').addEventListener('click', event => {
   const place = event.target.closest('[data-place]');
   open(place?.dataset.place ?? null);
+  persistCampaign();
 });
 document.addEventListener('click', event => {
   const icon = event.target.closest('[data-tooltip]');
@@ -1012,13 +1186,17 @@ document.addEventListener('click', event => {
   });
   if (icon) icon.classList.toggle('tooltip-open');
   const button = event.target.closest('button[data-action]');
-  if (button && !button.disabled) command(button.dataset.action);
+  if (button && !button.disabled) {
+    command(button.dataset.action);
+    if (button.dataset.action !== 'save') persistCampaign();
+  }
 });
 document.addEventListener('keydown', event => {
-  if ($('settings').open || $('story').open) return;
+  if ($('settings').open || $('story').open || $('profiles').open || $('encounterMedia').open) return;
   if (event.key === 'Escape' && selected) {
     open(null);
     $('overview').focus();
+    persistCampaign();
   }
   if (event.code === 'Space' && event.target === document.body) {
     event.preventDefault();
@@ -1028,7 +1206,11 @@ document.addEventListener('keydown', event => {
 $('menu').addEventListener('click', () => {
   stop();
   render();
-  $('menuStatus').textContent = '';
+  $('menuStatus').textContent = saveIssue;
+  $('activeProfile').textContent = playMode === 'practice' ? 'Raid practice. Your campaign saves are kept separately.'
+    : activeProfile ? `Profile: ${activeProfile.name} · Autosave on` : 'This session is not linked to a browser profile.';
+  $('settings').querySelector('[data-action="save"]').disabled = playMode !== 'campaign' || !activeProfile;
+  $('settings').querySelector('[data-action="export-session"]').disabled = playMode !== 'campaign';
   $('showHints').hidden = !village.opening || village.opening.hints;
   $('settings').showModal();
 });
@@ -1039,21 +1221,72 @@ $('speed').addEventListener('change', event => {
     toggleTime();
   }
   note(`Game speed set to ${speed}×.`);
+  persistCampaign();
 });
 new ResizeObserver(() => {
   document.documentElement.style.setProperty('--hud-height', `${$('hud').offsetHeight}px`);
   placeInspector();
 }).observe($('hud'));
-document.addEventListener('submit', event => {
+$('createProfile').addEventListener('submit', event => {
+  event.preventDefault();
+  if (resolvingRaid || !mayLeaveCampaign()) return;
+  try {
+    const profile = VillageSaves.create(new FormData(event.currentTarget).get('name'));
+    useProfile(profile, null);
+  } catch (error) {
+    $('profileStatus').textContent = error.message;
+  }
+});
+$('importSave').addEventListener('click', () => $('saveFile').click());
+$('saveFile').addEventListener('change', async event => {
+  const input = event.currentTarget;
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    if (file.size > 2 * 1024 * 1024) throw new Error('The backup is too large.');
+    const profile = VillageSaves.importBackup(await file.text());
+    if (!$('profiles').open) return;
+    $('profiles').close();
+    showProfiles();
+    $('profileStatus').textContent = `Imported ${profile.name} as a separate profile. Choose Continue to play it.`;
+  } catch (error) {
+    $('profileStatus').textContent = error instanceof SyntaxError
+      ? 'This file does not contain a readable Emberhollow backup.' : error.message;
+  }
+});
+$('story').addEventListener('submit', event => {
   if (event.target.id !== 'newVillageForm') return;
   event.preventDefault();
   const fields = new FormData(event.target);
-  village = VillageEngine.newOpening(fields.get('chief').trim() || 'Chief', fields.get('village').trim() || DEFAULT_VILLAGE_NAME);
-  scoutStrength = null;
+  const chief = fields.get('chief').trim() || 'Chief';
+  if (activeProfile?.progress && !window.confirm(`Replace the saved village in ${activeProfile.name} with a new story?`)) return;
+  if (!activeProfile) {
+    try {
+      activeProfile = VillageSaves.create(chief);
+    } catch {
+      saveIssue = 'Browser storage is unavailable. You can export this game from the village menu.';
+    }
+  }
+  lastSavedProgress = null;
+  playMode = 'campaign';
+  village = VillageEngine.newOpening(chief, fields.get('village').trim() || DEFAULT_VILLAGE_NAME);
+  resetInteraction();
+  visited.clear();
   selected = null;
   $('story').close();
+  if (activeProfile) persistCampaign();
+  else note(saveIssue);
   render();
 });
 $('story').addEventListener('cancel', event => event.preventDefault());
+$('encounterMedia').addEventListener('close', () => {
+  const video=$('encounterVideo');
+  video.pause();video.removeAttribute('src');video.load();
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden || !timer) return;
+  stop();persistCampaign();render();
+});
 render();
 showPrologue();

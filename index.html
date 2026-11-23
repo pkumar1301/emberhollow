@@ -8,6 +8,10 @@
   <script defer src="raid-client.js"></script>
   <script defer src="village-engine.js"></script>
   <script defer src="village-story.js"></script>
+  <script defer src="campaign-engine.js"></script>
+  <script defer src="campaign-events.js"></script>
+  <script defer src="campaign-view.js"></script>
+  <script defer src="village-saves.js"></script>
   <script defer src="village-play.js"></script>
 </head>
 <body>
@@ -36,11 +40,14 @@
           <option value="4">4×</option>
         </select>
       </label>
+      <button id="campaignButton" data-action="campaign:pane:town" hidden>Campaign</button>
+      <button id="altarButton" data-action="opening-altar" hidden>Altar</button>
       <button id="menu">Menu</button>
       <button data-action="warning" id="warning"></button>
     </div>
   </header>
   <section class="ledger" aria-label="Village ledger">
+    <button id="encounterAlert" data-action="campaign:pane:encounters" hidden></button>
     <button id="foodAlert" data-action="food-alert" hidden></button>
     <div class="stocks" id="stocks" aria-label="Resources, workers, and army"></div>
   </section>
@@ -59,18 +66,40 @@
   </div>
   <p id="notice" role="status"></p>
   <dialog id="story" aria-labelledby="storyTitle"><div id="storyContent"></div></dialog>
-  <dialog id="settings">
-    <h2>Village menu</h2>
-    <p>Save this engine-connected village and your tutorial progress in this browser.</p>
+  <dialog id="encounterMedia" aria-labelledby="encounterMediaTitle">
+    <h2 id="encounterMediaTitle">Encounter clip</h2>
+    <video id="encounterVideo" controls playsinline></video>
+    <button data-action="campaign:close-clip:">Return to encounter</button>
+  </dialog>
+  <dialog id="settings" aria-labelledby="settingsTitle">
+    <h2 id="settingsTitle">Village menu</h2>
+    <p id="activeProfile"></p>
     <div class="actions">
       <button data-action="save">Save village</button>
-      <button data-action="load">Load village</button>
+      <button data-action="profiles">Profiles &amp; saves</button>
+      <button data-action="export-session">Export current game</button>
       <button data-action="restart">New story</button>
       <button data-action="checkpoint">First raid checkpoint</button>
       <button data-action="show-hints" id="showHints" hidden>Show tutorial hints</button>
       <button data-action="closeMenu">Close</button>
     </div>
     <p id="menuStatus" role="status"></p>
+  </dialog>
+  <dialog id="profiles" aria-labelledby="profilesTitle">
+    <h2 id="profilesTitle">Profiles &amp; saves</h2>
+    <p>Profiles and progress stay in this browser. Use a backup file to move a save or keep a second copy.</p>
+    <div id="profileList"></div>
+    <form id="createProfile">
+      <label for="profileName">Profile name</label>
+      <input id="profileName" name="name" maxlength="32" required>
+      <button type="submit">Create profile</button>
+    </form>
+    <div class="actions">
+      <button type="button" id="importSave">Import backup</button>
+      <input id="saveFile" type="file" accept=".json,application/json" hidden>
+      <button data-action="close-profiles">Close</button>
+    </div>
+    <p id="profileStatus" role="status"></p>
   </dialog>
 </main>
 </body>

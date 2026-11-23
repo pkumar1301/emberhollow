@@ -38,6 +38,7 @@ const VillageEngine = {
   newOpening(chiefName, villageName) {
     return {
       ...this.newVillage(), chiefName, villageName, day: 1, raidDay: null,
+      campaignSeed: crypto.getRandomValues(new Uint32Array(1))[0],
       residents: 0, otherWorkers: 0, settled: false, farmers: 0, bakers: 0, woodcutters: 0, quarrymen: 0,
       grain: 0, food: 0, timber: 0, stone: 0, guide: 14,
       opening: { phase: 'stockpile', plots: {}, hints: true }
@@ -82,11 +83,11 @@ const VillageEngine = {
     return state.residents - state.otherWorkers - state.farmers - state.bakers - (state.woodcutters ?? 0) - (state.quarrymen ?? 0) - state.spearmen
       - Number(Boolean(state.trainingDay));
   },
-  grainYield(farmers) {
-    return 2 * farmers;
+  grainYield(farmers, blessing) {
+    return 2 * farmers * (blessing === 'harvest' ? 1.05 : 1);
   },
   provisionsMade(state, bakers = state.bakers) {
-    return Math.min(2 * bakers, (state.grain + this.grainYield(state.farmers)) / 1.5);
+    return Math.min(2 * bakers, (state.grain + this.grainYield(state.farmers,state.altarBlessing)) / 1.5);
   },
   rations(state) {
     return 0.15 * (state.residents + state.spearmen) + (state.dragon.health > 0 ? DRAGON_RATION : 0);
@@ -104,7 +105,7 @@ const VillageEngine = {
   foodForecast(state) {
     const daily = this.rations(state);
     const maxBake = 2 * state.bakers;
-    const grainRate = this.grainYield(state.farmers) / 1.5;
+    const grainRate = this.grainYield(state.farmers,state.altarBlessing) / 1.5;
     const daysUntil = (stock, rate) => daily > rate
       ? Math.floor((stock + 1e-8) / (daily - rate)) + 1 : Infinity;
     return {
@@ -129,7 +130,7 @@ const VillageEngine = {
       state.hunger.dragon = available + 1e-8 < DRAGON_RATION ? state.hunger.dragon + 1 : 0;
       if (state.hunger.dragon) {
         dragon.health = Math.max(0, dragon.health - 1.2);
-        dragon.favor = Math.max(0, dragon.favor - 0.8);
+        dragon.favor = Math.max(0, dragon.favor - (state.altarBlessing === 'trust' ? .6 : .8));
       }
     } else {
       state.hunger.dragon = 0;
@@ -275,7 +276,7 @@ const VillageEngine = {
       events.push('Wall repaired.');
     }
     const made = this.provisionsMade(state);
-    state.grain = Math.max(0, state.grain + this.grainYield(state.farmers) - 1.5 * made);
+    state.grain = Math.max(0, state.grain + this.grainYield(state.farmers,state.altarBlessing) - 1.5 * made);
     const dailySurplus = made - this.rations(state);
     state.food += made;
     const shortage = this.feed(state, events);

@@ -373,17 +373,6 @@ main:has(.battle-panel:not([hidden])) .battle-panel {
 .battle-comparison, .battle-scroll-hint { color: #e2c696; }
 .battle-scroll-hint { font-size: .85rem; }
 
-#story[data-scene="video"] {
-  width: min(850px, calc(100% - 28px));
-  background: #191e19;
-}
-#prologueVideo {
-  display: block;
-  width: 100%;
-  max-height: 60dvh;
-  margin: 8px 0 12px;
-  background: #0a0d0a;
-}
 .shortage-warning { color: #ffcd91; }
 
 .village-clock { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -398,3 +387,36 @@ main:has(.battle-panel:not([hidden])) .battle-panel {
   .village-clock.running .day-progress { animation: none; stroke-dasharray: 100 0; }
 }
 
+
+#profiles {
+  width: min(540px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+#profileList { display: grid; gap: 8px; margin-block: 12px; }
+.profile-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 1px solid var(--frame);
+  padding: 10px;
+}
+.profile-row strong, .profile-row small { display: block; overflow-wrap: anywhere; }
+.profile-row .actions { margin: 0; }
+#createProfile { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+#createProfile input { min-width: 0; max-width: 100%; font: inherit; color: inherit; background: #20251e; border: 1px solid var(--frame); padding: 5px 8px; }
+#profileStatus:empty, #menuStatus:empty { display: none; }
+
+.campaign-panel { width: min(760px, calc(100vw - 32px)); }
+.campaign-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.campaign-tabs button[aria-pressed="true"] { border-color: var(--gold); background: #494137; }
+.campaign-card { border-top: 1px solid #665e49; padding: 8px 0; margin-top: 8px; }
+.campaign-card h3 { color: var(--gold); margin-bottom: 5px; }
+.campaign-building { padding-block: 5px; }
+.campaign-requirements { padding-inline-start: 20px; }
+#encounterAlert { border-color: var(--gold); }
+#encounterMedia { max-width: min(800px, calc(100vw - 32px)); }
+#encounterVideo { display: block; max-width: 100%; max-height: 70vh; margin: 8px 0; }

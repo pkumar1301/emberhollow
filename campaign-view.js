@@ -46,15 +46,18 @@ const CampaignView = (() => {
           const upgrade=(options[gear.tier]??[]).map((name,i)=>b('gear',`${key}.${i}`,`Equip ${name} · ${money(Campaign.gearCost(c,key,i))}`,
             disabled(c)||!units.length||gear.tier>=Campaign.gearCap(c,key)||!Campaign.canPay(c,Campaign.gearCost(c,key,i))||!!due(c,'gear',key))).join('');
           return card(label,count('Soldiers',units.length)+count('Veterancy',Campaign.rank(units))+count('Equipment tier',gear.tier||'Basic')
-            +(installed?count('Equipped options',installed):'')+count('Loadout',gear.mode==='dragon'?'Anti-dragon':'Field')
+            +(installed?count('Equipped options',installed):'')
             +`<div class="actions">${b('train',key,`Train · ${money(cost)} · ${days} days`,!Campaign.canTrain(c,key))}
               ${b('demobilize',key,'Demobilize one',!units.length||disabled(c))}
-              ${upgrade}
-              ${b('loadout',key,`Switch to ${gear.mode==='dragon'?'field':'anti-dragon'} · 1 equipment`,disabled(c)||!units.length||gear.tier<2||c.stock.equipment<1||!!due(c,'loadout',key))}</div>`
-            +queuedText(c,'train',key)+queuedText(c,'gear',key)+queuedText(c,'loadout',key)
+              ${upgrade}</div>`
+            +queuedText(c,'train',key)+queuedText(c,'gear',key)
             +build(c,site));
-        }).join('')+card('Fortifications',['wall','tower','ballista','bastion'].filter(k=>Campaign.buildings[k][1]<=c.level)
-          .map(k=>build(c,k)).join(''));
+        }).join('')+kitCard(c)+card('Fortifications',['wall','tower','ballista','bastion'].filter(k=>Campaign.buildings[k][1]<=c.level)
+          .map(k=>build(c,k)).join('')+(c.level>=3?count('Walls reinforced',c.reinforced?'Yes':'No')
+          +b('reinforce','',`Reinforce walls · ${money(Campaign.reinforceCost)} · 4 days`,!Campaign.canReinforce(c))+queuedText(c,'reinforce','wall')
+          +count('Dragonbane bolts',`${fmtCampaign(c.bolts)} / ${Campaign.boltBatch.cap}`)
+          +b('bolts','',`Make ${Campaign.boltBatch.size} bolts at the workshop · ${money(Campaign.boltBatch.cost)} · ${Campaign.boltBatch.days} days`,!Campaign.canMakeBolts(c))
+          +queuedText(c,'bolts','workshop'):''));
     },
     dragon(c){
       const d=c.dragon;
@@ -64,7 +67,8 @@ const CampaignView = (() => {
         +count('Favor',d.favor)+count('Provision reserve',d.reserve)+count('Stance',escapeText(d.stance))
         +(c.demand?card('Demand',count('Due day',c.demand.due)+count('Requested',money(c.demand.cost))
           +b('demand','deliver','Meet demand · +9 favor',!Campaign.canPay(c,c.demand.cost)||disabled(c))+b('demand','refuse','Refuse demand · −9 favor',disabled(c))):'')
-        +(c.departure?card('The guardian asks to leave','<p>At zero favor, the guardian will not defend. Departure damages village buildings. The Town Center is protected.</p>'
+        +(c.departure?card('The guardian asks to leave',`<p>At zero favor, the guardian will not defend. If it leaves, every building except the Town Center takes ${Campaign.departureDamage(c).map(n=>Math.round(n)).join('–')}% damage and the army loses 5–10% of its soldiers. There is no harvest.</p>`
+          +(Campaign.departureRisk(c).length?`<p>Could be destroyed or lose a level: ${Campaign.departureRisk(c).map(k=>escapeText(Campaign.buildings[k][0])).join(', ')}.</p>`:'')
           +b('departure','keep','Ask the guardian to stay',disabled(c))+b('departure','leave','Accept departure',disabled(c))):'')
         +`<div class="actions">${stance}${b('offer','','Offer 5 provisions',c.stock.food<5||disabled(c))}
           ${b('salve','','Use salve · recover 14 health',c.stock.salve<1||d.health>=Campaign.dragonMax(c)||disabled(c))}
@@ -76,7 +80,7 @@ const CampaignView = (() => {
       let recruit=b('summon','',`Pay to summon · ${money(Campaign.summonCost(c))}`,!Campaign.canSummon(c));
       if(o?.arrival)recruit=count('Hero arrives',`Day ${o.arrival}`);
       else if(o){
-        recruit=(o.category?count('Offered specialty',escapeText(o.specialty))
+        recruit=(o.category?count('Offered specialty',escapeText(o.specialty))+count('Effect',Campaign.specialtyEffects[o.specialty]??'')
           +Campaign.traits.map((trait,i)=>b('choose-hero',i,`Recruit · ${trait}`,disabled(c))).join('')
           +b('reroll','',`Reroll ${o.rerolls+1} · ${money(Object.fromEntries(Object.entries(o.cost).map(([k,v])=>[k,Math.ceil(v*(o.rerolls+1)*.5)])))}`,
             disabled(c)||o.rerolls>=3||!Campaign.categories[o.category].some(x=>x!==o.specialty&&!c.heroes.some(h=>h.specialty===x))):o.options.map(k=>b('category',k,k[0].toUpperCase()+k.slice(1),disabled(c))).join(''))
@@ -86,17 +90,17 @@ const CampaignView = (() => {
         +count('Altar status',c.day<c.altar.lockedUntil?`Locked until Day ${c.altar.lockedUntil}`:'Ready')
         +`<div class="actions">${Object.entries(Campaign.blessings).map(([id,label])=>b('bless',id,label,c.day<c.altar.lockedUntil||id===c.altar.blessing||disabled(c))).join('')}</div>`
         +card('Summoning',recruit)
-        +c.heroes.map((h,i)=>card(escapeText(h.specialty),count('Trait',Campaign.traits[h.trait])+count('Level',h.level)+count('Health',h.health)
+        +c.heroes.map((h,i)=>card(escapeText(h.specialty),count('Effect',Campaign.specialtyEffects[h.specialty]??'')+count('Trait',Campaign.traits[h.trait])+count('Level',h.level)+count('Health',h.health)
           +count('Battle position',escapeText(h.mode))+`<div class="actions">${['inside','fortifications','engage'].map(k=>b('hero-mode',`${i}.${k}`,k,h.mode===k||disabled(c))).join('')}
           ${b('hero-train',i,'Level up · 8 provisions · 1 equipment',h.level>=4||disabled(c)||!Campaign.canPay(c,{food:8,equipment:1}))}
           ${b('dismiss',i,'Dismiss · no refund',c.day<c.altar.lockedUntil||disabled(c)||!!o)}</div>`)).join('');
     },
     threat(c){
       const t=c.threat,day=Campaign.nextAttack(c);
-      const heading=c.invasionAt!==null?`Invasion wave ${c.wave+1}`:'Next raid';
+      const heading=c.invasionAt!==null&&day===c.invasionAt?`Invasion wave ${c.wave+1}`:'Next raid';
       if(c.status!=='active')return `<p>${ending(c)}</p>${b('pane','records','Review battle reports')}${b('pane','checkpoints','View checkpoints')}`;
-      if(!t)return count(heading,`Day ${day} · ${day-c.day} days away`)+count('Army power',Campaign.armyPower(c))+
-        '<p>Four days before contact, the watch reports the incoming force. Scouts can then investigate.</p>';
+      if(!t)return (day===null?'<p>No attack is expected.</p>':count(heading,`Day ${day} · ${day-c.day} days away`))+count('Army power',Campaign.armyPower(c))
+        +invasionCard(c)+'<p>Four days before contact, the watch reports the incoming force. Scouts can then investigate.</p>';
       const intel=t.intel;
       const estimate=intel&&intel.roll>1&&intel.margin>=-4?(intel.margin>=5?`${t.field} field · ${t.boss} flying`:
         `${Math.round(t.field*(intel.margin>=0?.9:.7))}–${Math.round(t.field*(intel.margin>=0?1.1:1.3))} field`):'Unconfirmed';
@@ -104,10 +108,12 @@ const CampaignView = (() => {
         +count('Estimated force',estimate)+count('Army power',Campaign.armyPower(c))
         +(intel?count('Scouting roll',`${fmtCampaign(intel.roll)} → ${fmtCampaign(intel.total)} against ${fmtCampaign(intel.dc)}`)
           +(intel.roll>1&&intel.margin>=0?count('Threat type',escapeText(t.type)):''):'')
+        +(t.flier?`<p>A ${escapeText(t.type)} flies with these raiders. Only your guardian, ballistae and soldiers carrying the anti-dragon kit can hurt it. Unopposed, it burns stores and wounds soldiers, then flies off.</p>`:'')
         +(t.wave===3?'<p>The evil dragon accompanies the final wave. Invasion forces fight until defeated or the Town Center falls.</p>':'')
+        +invasionCard(c)
         +b('scout','watch','Send scout · 3 provisions · 1 day',!Campaign.free(c)||c.day+1>=t.day||!!intel||!!due(c,'scout','watch')||c.stock.food<3)
         +queuedText(c,'scout','watch')
-        +b('fight','','Resolve battle',c.day<t.day);
+        +b('fight','','Resolve battle',c.day<t.day||resolvingBattle);
     },
     encounters(c){
       const e=c.event,h=e&&CampaignEvents.roster[e.id];
@@ -122,8 +128,7 @@ const CampaignView = (() => {
       return current+(c.eventHistory.length?card('Encounter history',c.eventHistory.slice().reverse().map(h=>count(`Day ${h.day} · ${CampaignEvents.roster[h.id]?.title??'Encounter'}`,escapeText(h.result))).join('')):'');
     },
     journal(c){
-      const fragments={seal:['The Traveler’s Seal','A copied seal confirms that the east road was open.'],shadow:['Shadow Across the Pass','A wing crossed the pass. Ballistae and anti-dragon equipment can help against flying threats.'],
-        lamps:['Lamps Along the Ridge','The watch mapped a weak sector. Your next fortification repair saves two timber.']};
+      const fragments=CampaignEvents.journalEntries;
       return c.journal.map(id=>Campaign.stories[id]??fragments[id]).filter(Boolean).map(([label,copy])=>card(label,`<p>${copy}</p>`)).join('')
         +card('Village ledger',c.log.slice(-18).reverse().map(x=>count(`Day ${x.day}`,escapeText(x.text))).join(''));
     },
@@ -138,8 +143,11 @@ const CampaignView = (() => {
           +count('Guardian health',`${fmtCampaign(r.guardianBefore)} → ${fmtCampaign(r.guardianAfter)}`)
           +Object.entries(Campaign.troopTypes).filter(([key])=>r.casualties[key]>0).map(([key,t])=>count(`${t[0]} lost`,r.casualties[key])).join('')
           +Object.entries(Campaign.resources).filter(([key])=>r.plunder[key]>0).map(([key,label])=>count(`${label} taken`,r.plunder[key])).join('')
-          +`<details ${index===0?'open':''}><summary>${r.rounds.length} combat ${r.rounds.length===1?'round':'rounds'}</summary><table class="production-table"><thead><tr><th scope="col">Round</th><th scope="col">Roll</th><th scope="col">Field</th><th scope="col">Flying</th><th scope="col">Wall</th><th scope="col">Town</th></tr></thead><tbody>`
-          +r.rounds.map(r=>`<tr>${['round','roll','field','boss','wall','town'].map(k=>`<td>${k==='roll'&&Number.isFinite(r.roll)?r.roll.toFixed(2):fmtCampaign(r[k])}</td>`).join('')}</tr>`).join('')
+          +(r.duel?count('Guardian duel',escapeText(r.duel)):'')+(r.counter!==null&&r.counter!==undefined?count('Invasion countered',`${Math.round(r.counter*100)}%`):'')
+          +(r.kitRight!==null&&r.kitRight!==undefined?count('Anti-dragon kit share',r.kitRight?'Matched the threat':'Did not match the threat'):'')
+          +(r.levelsLost?count('Building levels lost',r.levelsLost):'')+(r.deadlock?`<p>${escapeText(r.deadlock)}.</p>`:'')
+          +`<details ${index===0?'open':''}><summary>${r.rounds.length} combat ${r.rounds.length===1?'round':'rounds'}</summary><table class="production-table"><thead><tr><th scope="col">Round</th><th scope="col">Enemy field</th><th scope="col">Flying</th><th scope="col">Incoming</th><th scope="col">Damage dealt</th></tr></thead><tbody>`
+          +r.rounds.slice(0,60).map(r=>`<tr>${['round','field','boss','incoming','damage'].map(k=>`<td>${fmtCampaign(r[k])}</td>`).join('')}</tr>`).join('')
           +'</tbody></table></details>')).join(''):'<p>No campaign battles have been resolved yet.</p>');
     },
     checkpoints(c){
@@ -148,6 +156,23 @@ const CampaignView = (() => {
           +b('restore',l,`Restart from Level ${l}`))).join('');
     }
   };
+  function kitCard(c){
+    if(c.level<2)return '';
+    const eligible=Object.values(c.army).flat().length&&Object.entries(c.gear).some(([k,g])=>g.tier>=2&&c.army[k].length);
+    return card('Anti-dragon kit','<p>Soldiers at equipment tier 2 or higher can carry the kit. Only kit carriers, ballistae and your guardian can hurt flying raiders and the evil dragon. Kit carriers fight 10% weaker against armies.</p>'
+      +count('Share of eligible soldiers carrying the kit',`${Math.round(c.kitShare*100)}%`)
+      +`<div class="actions">${Campaign.kitShares.map(s=>b('kit',String(s),`${Math.round(s*100)}%`,disabled(c)||!eligible||c.kitShare===s)).join('')}</div>`);
+  }
+  function invasionCard(c){
+    if(c.level<4||!c.invasionType)return '';
+    const known=c.invasionKnown, type=c.invasionType;
+    const when=c.invasionAt!==null?count(`Invasion wave ${c.wave+1}`,`Day ${c.invasionAt} · ${Math.max(0,c.invasionAt-c.day)} days away`):'';
+    return card('The coming invasion',when+(known?count('Invasion type',Campaign.typeNames[type])+count('Counter',Campaign.counters[type])
+      :'<p>The scouts have not identified the invasion force yet.</p>'
+        +(c.invasionIntel?count('Last scouting roll',`${c.invasionIntel.total} against ${c.invasionIntel.dc}`):'')
+        +b('scout-invasion','watch','Send scouts to identify the invasion · 3 provisions · 2 days',disabled(c)||!Campaign.free(c)||c.stock.food<3||!!due(c,'scout-invasion','watch')||c.day<(c.invasionIntel?.day??0)+5)
+        +queuedText(c,'scout-invasion','watch')));
+  }
   function build(c,key,showTitle=true){
     const d=c.buildings[key],label=Campaign.buildings[key][0];
     const project=c.queue.find(j=>j.kind==='build'&&j.key===key);
@@ -160,7 +185,7 @@ const CampaignView = (() => {
   function ending(c){
     return {victory:'Victory. The village repelled all three invasion waves and the Town Center still stands.',
       defeat:'Defeat. The village can no longer continue. Review the ledger or restart from a milestone.',
-      stall:'The battle stalled. Its report and state are preserved. Restart from a milestone to continue.'}[c.status]??'';
+    }[c.status]??'';
   }
   const media=new Set();
   async function discoverMedia(id){

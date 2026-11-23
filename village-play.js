@@ -517,10 +517,11 @@ function reportBody() {
     <td>${fmt(round.spearmen)}</td><td>${fmt(round.dragonDamage ?? round.dragonPower)}</td>
     <td>${fmt(round.wall)}</td><td>${round.damage === undefined ? '—' : fmt(round.damage)}</td>
     <td>${round.enemyAfter === undefined ? '—' : fmt(round.enemyAfter)}</td></tr>`).join('');
-  return `<div class="battle-banner ${result.status === 'won' ? 'victory' : 'breach'}">
+  const title = result.status === 'won' && result.breached ? 'Raiders broke through' : raidTitles[result.status];
+  return `<div class="battle-banner ${result.status === 'won' && !result.breached ? 'victory' : 'breach'}">
       <div class="battle-portrait raiders" aria-hidden="true"></div>
       <div class="battle-result"><small>FIRST RAID · DAY ${result.day}</small>
-        <strong>${raidTitles[result.status]}</strong>
+        <strong>${title}</strong>
         <span>${result.rounds.length} ${result.rounds.length === 1 ? 'round' : 'rounds'}</span>
       </div>
       <div class="battle-portrait guardian" aria-hidden="true"></div>
@@ -530,6 +531,7 @@ function reportBody() {
       <ul class="report-list">
         <li>Wall health <strong>${result.wallBefore}% → ${result.wallAfter}%</strong></li>
         <li>Dragon health <strong>${fmt(result.dragonBefore)}/${result.dragonMax} → ${fmt(result.dragonAfter)}/${result.dragonMax}</strong></li>
+        ${result.breached ? `<li>${result.safetyNet ? 'The raiders reached the Town Center. At Level 1 it cannot fall, but they' : 'The raiders pressed the wall below three-quarters health and'} carried off stores above the protected reserve.</li>` : ''}
         <li>Plunder ${stolen.length ? stolen.map(([name, key]) => trainingIcon(name, `${name} taken`, fmt(result.plunder[key]))).join(' ') : '<strong>None</strong>'}</li>
       </ul>
     </section>
@@ -561,7 +563,8 @@ function battleComparison(result) {
   return `<section class="battle-comparison"><h3>What your orders changed</h3>
     <small>${orders} · same raid and starting village</small>
     ${row('Wall health · unprepared → actual', `${base.wallAfter}% → ${result.wallAfter}%`)}
-    ${row('Rounds · unprepared → actual', `${base.rounds} → ${result.rounds.length}`)}</section>`;
+    ${row('Rounds · unprepared → actual', `${base.rounds} → ${result.rounds.length}`)}
+    ${base.plunder ? row('Stores taken · unprepared → actual', `${fmt(Object.values(base.plunder).reduce((a, b) => a + b, 0))} → ${fmt(Object.values(result.plunder).reduce((a, b) => a + b, 0))}`) : ''}</section>`;
 }
 
 function foodInspector() {
@@ -1001,6 +1004,33 @@ function syncCampaign() {
   persistCampaign();
 }
 
+let resolvingBattle = false;
+
+// Campaign battles run in the run 10 Python engine in the browser worker (campaign_battle.py).
+async function resolveCampaignBattle() {
+  const c = village.campaign;
+  if (resolvingBattle || !c || c.status !== 'active' || !c.threat || c.day < c.threat.day) return;
+  stop();
+  resolvingBattle = true;
+  note('Resolving the battle…');
+  render();
+  const battleVillage = village;
+  try {
+    const result = await RaidClient.request('campaign', Campaign.battleSnapshot(c));
+    if (village !== battleVillage) return;
+    Campaign.applyBattle(c, result);
+    syncCampaign();
+    note('Battle resolved. Time is paused.');
+    openCampaign('records');
+  } catch (error) {
+    if (village !== battleVillage) return;
+    note('The battle engine could not load. Check the connection and choose Resolve battle again.');
+    render();
+  } finally {
+    resolvingBattle = false;
+  }
+}
+
 function beginCampaign() {
   stop();
   Campaign.start(village);
@@ -1026,12 +1056,12 @@ function campaignCommand(action) {
   if (verb==='first-report') return open('report');
   if (verb==='restore' && (!c.checkpoints[key] || !window.confirm(`Resume Level ${key} from its saved milestone? Current progress will be replaced.`))) return;
   const route = verb==='event' && key!=='pass' && c.event ? CampaignEvents.roster[c.event.id]?.pane : null;
+  if (verb==='fight') return resolveCampaignBattle();
   if (!Campaign.action(c,verb,key)) {
     note('That action is not available right now.');
     return render();
   }
   syncCampaign();
-  if (verb==='fight') return openCampaign('records');
   if (verb==='restore') { stop(); return openCampaign('town'); }
   return openCampaign(route ?? campaignPane);
 }

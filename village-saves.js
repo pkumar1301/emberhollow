@@ -20,6 +20,7 @@ const VillageSaves = (() => {
     if (state.opening && (!isRecord(state.opening.plots) || !Object.entries(state.opening.plots)
         .every(([place, plot]) => Object.hasOwn(OPENING_BUILDINGS, place) && isRecord(plot)
           && count(plot.due) && typeof plot.ready === 'boolean'))) invalid();
+    if (state.campaign != null) Campaign.normalize(state.campaign);
     if (state.campaign != null && (!state.opening || state.level !== 2 || !Campaign.validate(state.campaign))) invalid();
     if (state.dragon != null && (!isRecord(state.dragon) || !numberFields(state.dragon, ['health', 'reserve', 'favor']))) invalid();
     if (state.hunger != null && (!isRecord(state.hunger) || !numberFields(state.hunger, ['civilians', 'soldiers', 'dragon']))) invalid();
@@ -46,7 +47,7 @@ const VillageSaves = (() => {
     for (const field of ['raidDay', 'trainingDay', 'repairDay', 'upgradeDay', 'advancementDay']) {
       if (village[field] != null && !count(village[field])) invalid();
     }
-    return { village, visited: [...progress.visited], speed: [0.5, 1, 2, 4].includes(progress.speed) ? progress.speed : 1 };
+    return { village, visited: [...progress.visited], speed: [1, 2, 3].includes(progress.speed) ? progress.speed : 1 };
   }
 
   function makeProfile(name, progress = null, id = crypto.randomUUID()) {

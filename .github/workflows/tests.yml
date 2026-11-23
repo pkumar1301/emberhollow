@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * *"   # nightly: the full scripted battery
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Engine, adapter and first raid (Python)
+        run: python3 -m unittest discover -s tests -p "test_*.py" -v
+      - name: Campaign rules (Node)
+        run: node --test tests/campaign.test.mjs
+      - name: Scripted full campaigns (quick)
+        if: github.event_name != 'schedule'
+        run: node tests/scripted_runs.mjs --seeds 20 --check
+      - name: Scripted full campaigns (200 seeds per profile)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: node tests/scripted_runs.mjs --seeds 200 --check --out scripted-results.json
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Browser checks (with the Pyodide engine)
+        env:
+          PYODIDE: "1"
+        run: python3 tests/browser_smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('scripted-results.json') != ''
+        with:
+          name: scripted-results
+          path: scripted-results.json

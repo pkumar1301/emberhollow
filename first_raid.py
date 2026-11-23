@@ -8,8 +8,14 @@ from .dv_engine import Run, VERSION
 CONFIG = json.loads(Path(__file__).with_name("run10.json").read_text())
 RESOURCE_KEYS = {"grain": "grain", "provisions": "food", "timber": "timber", "stone": "stone"}
 RAID_DAY = 36
-# A repeatable tutorial encounter with visible consequences for Guard and Rally.
-TUTORIAL_DIFFICULTY = 2.5
+# A repeatable tutorial encounter with visible consequences for Guard and Rally (GAME-FIX-1 A5).
+# The tutorial narrows the raid's random spread so one lesson is not undone by a lucky or unlucky draw.
+TUTORIAL_DIFFICULTY = 4.7
+TUTORIAL_SPREAD = (0.9, 1.1)
+# Level 1 breach: raiders who push the wall below this share carry off stores above the protected reserve.
+BREACH_WALL = 75
+BREACH_PLUNDER = 0.10
+PROTECTED = {"grain": 10, "provisions": 10, "timber": 8, "stone": 8}
 
 
 def checked_number(payload, name, minimum, maximum, *, integer=False):
@@ -22,7 +28,7 @@ def checked_number(payload, name, minimum, maximum, *, integer=False):
 
 
 def tutorial_run(seed):
-    run = Run(seed, {"walls": True, "gear": False, "dragon": 1}, CONFIG)
+    run = Run(seed, {"walls": True, "gear": False, "dragon": 1}, dict(CONFIG, SPREAD=TUTORIAL_SPREAD))
     run.day = RAID_DAY
     run.difficulty = TUTORIAL_DIFFICULTY
     return run
@@ -71,6 +77,17 @@ def resolve_first_raid(payload, compare=False):
     run.force = encounter  # Reuse the drawn encounter without advancing the random streams twice.
     dragon_before = run.hp
     status = run.fight(False, False)
+    safety_net = False
+    if status == "defeat":
+        # Level 1 safety net (brief 4.5): the Town Center cannot fall below 1 health. The raiders take stores and leave.
+        status, safety_net = "won", True
+        run.town = max(run.town, 1)
+        run.cause = None
+    wall_after = min(100, math.floor(run.fort / wall_capacity * 100 + 0.5))
+    breached = safety_net or wall_after < BREACH_WALL
+    if breached:
+        for label, key in RESOURCE_KEYS.items():
+            run.s[key] -= max(0, run.s[key] - PROTECTED[label]) * BREACH_PLUNDER
     remaining = {label: run.s[key] for label, key in RESOURCE_KEYS.items()}
     plunder = {label: max(0, starting[label] - remaining[label]) for label in RESOURCE_KEYS}
     rounds = [{
@@ -89,7 +106,7 @@ def resolve_first_raid(payload, compare=False):
         "attackerStrength": encounter[0], "retreatAt": encounter[0] * (1 - 0.4), "spearmen": defenders,
         "casualties": defenders - run.army(),
         "dragonBefore": dragon_before, "dragonAfter": run.hp, "dragonMax": run.dmax(),
-        "wallBefore": wall, "wallAfter": min(100, math.floor(run.fort / wall_capacity * 100 + 0.5)),
+        "wallBefore": wall, "wallAfter": wall_after, "breached": breached, "safetyNet": safety_net,
         "offered": rally, "stocks": remaining, "plunder": plunder, "rounds": rounds,
         "cause": run.cause,
     }

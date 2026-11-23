@@ -61,6 +61,14 @@ const CampaignEvents = (() => {
       [option('Inspect the weak sector',project('lamps'),worker)])
   };
 
+  // Journal pages that encounters (and campaign milestones) can add. An encounter adds one with project('<key>').
+  const journalEntries = {
+    seal: ['The Traveler’s Seal', 'A copied seal confirms that the east road was open.'],
+    shadow: ['Shadow Across the Pass', 'A wing crossed the pass. Ballistae and anti-dragon equipment can help against flying threats.'],
+    lamps: ['Lamps Along the Ridge', 'The watch mapped a weak sector. Your next fortification repair saves two timber.'],
+    sighting: ['A Wyrm Over the Ridge', 'A wyrm was seen over the ridge. At Level 4, flying raiders may join the raids. Only your guardian, ballistae and soldiers carrying the anti-dragon kit can hurt them.']
+  };
+
   function close(c, result) {
     const event=c.event;
     c.eventHistory.push({id:event.id,day:c.day,offered:event.offered,result});
@@ -109,5 +117,5 @@ const CampaignEvents = (() => {
   function canRecover(c) {
     return ['01','04'].includes(c.event?.id)&&spare(c,c.event.id==='01'?2:1);
   }
-  return { roster, tick, choose, canRecover };
+  return { roster, journalEntries, tick, choose, canRecover };
 })();

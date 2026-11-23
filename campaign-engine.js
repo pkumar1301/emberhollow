@@ -4,7 +4,7 @@ const Campaign = (() => {
     livestock: 'Livestock', herbs: 'Herbs', salve: 'Salve', iron: 'Iron', equipment: 'Equipment' };
   const jobs = {
     farmers: ['Farmers', 1, 'farm', 'grain', 2], bakers: ['Bakers', 1, 'oven', 'food', 2],
-    woodcutters: ['Woodcutters', 1, 'wood', 'timber', 2], quarrymen: ['Quarry workers', 1, 'quarry', 'stone', 1],
+    woodcutters: ['Woodcutters', 1, 'wood', 'timber', 3], quarrymen: ['Quarry workers', 1, 'quarry', 'stone', 1.5],
     herders: ['Herders', 2, 'pasture', 'livestock', .75], growers: ['Herb growers', 2, 'herbGarden', 'herbs', 1],
     healers: ['Healers', 2, 'healer', 'salve', .5], miners: ['Miners', 3, 'mine', 'iron', 1],
     smiths: ['Smiths', 3, 'workshop', 'equipment', .75]
@@ -45,13 +45,32 @@ const Campaign = (() => {
   };
   const advancement = { 3: { timber: 48, stone: 36, food: 20 }, 4: { timber: 144, stone: 108, food: 60, iron: 12 } };
   const caps = [3, 6, 9, 10];
+  const tierStarts = [1, 4, 7, 10];
+  // Run 10 settings that the campaign schedules outside battle (see run10.json).
   const raidGaps = [25, 20, 15, 10];
+  const raidStrength = [.60, .75, .85, .95];
+  const countdown = 48, waveGap = 12, raidStop = 5, flyStop = 10, flyStrength = [.25, .40];
+  const invasionTypes = ['horde', 'siege', 'wyrm'];
+  const typeNames = { horde: 'Horde', siege: 'Siege', wyrm: 'Wyrm' };
+  const counters = { horde: 'Watchtowers (4 for a full counter)', siege: 'Reinforced walls',
+    wyrm: 'Ballistae with bolts (3 for a full counter) or the anti-dragon kit' };
+  const kitShares = [0, .15, .25, .33, .5, .67];
+  const boltBatch = { size: 5, cost: { iron: 2.5, timber: 2.5, herbs: 1 }, days: 2, cap: 60 };
+  const reinforceCost = { stone: 60, iron: 20 };
+  const production = ['farm', 'oven', 'wood', 'quarry', 'pasture', 'herbGarden', 'healer', 'mine', 'workshop'];
   const stories = {
     2: ['The Old Seal', 'A survivor traces the seal in the dust. The chief remembers giving the order to close the gate, though the reason still escapes them.'],
     3: ['The Second Road', 'A recovered dispatch shows another road out of the city. Holding the first gate bought time for the families using that second road.'],
     4: ['The Hand at the Lever', 'The chief recognizes the torn cuff on the hand at the lever. In the smoke, the line of gold was the guardian reaching through the gate.']
   };
   const blessings = { harvest: 'Harvest · +5% grain', trust: 'Trust · slower favor loss', watch: 'Watch · +1 scouting' };
+  const specialtyEffects = {
+    'Grain production': '+10% grain', 'Timber production': '+10% timber', Scouting: '+3 on scouting rolls',
+    'Infantry defense': '15% of fallen spearmen and swordsmen recover', 'Archer damage': '+10% archer power',
+    'Infantry damage': '+10% spearmen and swordsmen power', 'Counter-fire': '+10% tower and wall fire',
+    'Wall defense': 'walls take 15% less damage', Favor: 'favor falls 25% slower; +2 favor for each met demand',
+    'Guardian strength': '+10% guardian power'
+  };
   const categories = { production: ['Grain production', 'Timber production'], defense: ['Scouting', 'Infantry defense'],
     attack: ['Archer damage', 'Infantry damage'], fortifications: ['Counter-fire', 'Wall defense'], dragon: ['Favor', 'Guardian strength'] };
   const traits = ['Strong bonus', 'Low upkeep', 'Battle-hardened'];
@@ -59,8 +78,22 @@ const Campaign = (() => {
   const emptyMap = keys => Object.fromEntries(Object.keys(keys).map(key => [key, 0]));
   const defenses=['wall','tower','ballista','bastion'];
 
+  // Fields added by GAME-FIX-1. Older saves receive the defaults.
+  function normalize(c) {
+    if (!c || typeof c !== 'object') return c;
+    c.bolts ??= 0; c.reinforced ??= false; c.kitShare ??= 0; c.invasionType ??= null; c.invasionKnown ??= false;
+    c.flyRaids ??= 0; c.l2Grace ??= false; c.battles ??= c.reports?.length ?? 0;
+    if (c.dragon) c.dragon.buffUntil ??= 0;
+    if (c.status === 'stall') c.status = 'active';
+    if (c.level === 4 && c.wave === 0 && c.invasionAt !== null && c.raidAt === null && c.invasionAt - c.day > raidStop + raidGaps[3])
+      c.raidAt = c.day + raidGaps[3];
+    if (c.level === 4 && !c.invasionType) c.invasionType = invasionTypes[Math.floor(random(c.seed ^ 0x2be9, 7) * 3)];
+    for (const point of Object.values(c.checkpoints ?? {})) normalize(point);
+    return c;
+  }
+
   function start(v) {
-    if (v.campaign) return v.campaign;
+    if (v.campaign) return normalize(v.campaign);
     const built = Object.fromEntries(Object.keys(buildings).map(key => [key, { level: 0, health: 100 }]));
     for (const key of ['hall', 'homes', 'farm', 'oven', 'wood', 'quarry', 'wall', 'granary', 'warehouse']) built[key].level = 1;
     built.barracks.level = v.barracksLevel;
@@ -76,8 +109,10 @@ const Campaign = (() => {
       heroes: [], altar: { blessing: v.altarBlessing ?? null, lockedUntil: v.altarLockedUntil ?? 0, offer: null },
       threat: null, raidAt: v.day + raidGaps[1], raidCount: 0, wave: 0, invasionAt: null,
       event: null, eventAt: v.day + 5, eventDraws: 0, eventHistory: [], effects: [], checkpoints: {},
-      demand: null, demandAt: v.day + 10, departure: false, journal: [2], repairDiscount: 0, status: 'active'
+      demand: null, demandAt: v.day + 10, departure: false, journal: [2], repairDiscount: 0, status: 'active',
+      bolts: 0, reinforced: false, kitShare: 0, invasionType: null, invasionKnown: false, flyRaids: 0, l2Grace: true, battles: 0
     };
+    c.dragon.buffUntil = 0;
     for (const key of ['farmers', 'bakers', 'woodcutters', 'quarrymen']) c.jobs[key] = v[key] ?? 0;
     if (v.trainingDay) c.queue.push({ kind: 'train', key: 'spearmen', day: v.trainingDay, workers: 1 });
     if (v.upgradeDay) c.queue.push({ kind: 'build', key: 'barracks', day: v.upgradeDay, workers: 0 });
@@ -123,8 +158,14 @@ const Campaign = (() => {
   const scaled = (cost, multiplier) => Object.fromEntries(Object.entries(cost).map(([key,n]) => [key, Math.ceil(n * multiplier)]));
   const labelCost = cost => Object.entries(cost).map(([key,n]) => `${n} ${resources[key].toLowerCase()}`).join(' · ');
   const queued = (c, kind, key) => c.queue.some(j => j.kind === kind && j.key === key);
-  const nextAttack = c => c.threat?.day ?? c.invasionAt ?? c.raidAt;
-  const rations = c => .15 * (c.residents + troops(c)) + c.heroes.reduce((n,h) => n + (h.trait === 1 ? .08 : .2),0)
+  function nextAttack(c) {
+    if (c.threat) return c.threat.day;
+    const days = [c.raidAt, c.invasionAt].filter(d => d !== null && d !== undefined);
+    return days.length ? Math.min(...days) : null;
+  }
+  const hasHero = (c, name) => c.heroes.some(h => h.specialty === name);
+  const favorLoss = (c, amount) => amount * (c.altar.blessing === 'trust' ? 2 / 3 : 1) * (hasHero(c, 'Favor') ? .75 : 1);
+  const rations = c => .12 * (c.residents + troops(c)) + c.heroes.reduce((n,h) => n + (h.trait === 1 ? .08 : .2),0)
     + (livingDragon(c) ? .6 + .24 * (c.dragon.level-1) : 0);
   const storage = (c,key) => (key === 'grain' || key === 'food' ? 36+34*levelOf(c,'granary') :
     key === 'livestock' ? 8+14*levelOf(c,'pasture') : 38+55*levelOf(c,'warehouse'));
@@ -166,11 +207,12 @@ const Campaign = (() => {
   }
   function upkeep(gear,key) {
     const choices=gear.choices??[];
+    // Per-soldier daily upkeep on the scale of run 10's GEAR_UPKEEP (0.02 per soldier per priced option).
     return {
-      equipment: .10*(Number(key==='archers'&&choices[1]===0)+Number(key==='swordsmen'&&choices[1]===0)
+      equipment: .02*(Number(key==='archers'&&choices[1]===0)+Number(key==='swordsmen'&&choices[1]===0)
         +Number(['spearmen','swordsmen'].includes(key)&&choices[0]===0)),
-      iron:.12*(Number(key==='spearmen'&&choices[1]===1)+Number(['swordsmen','cavalry'].includes(key)&&choices[2]===1)),
-      food:key==='cavalry'&&choices[1]===1?.12:0
+      iron:.03*(Number(key==='spearmen'&&choices[1]===1)+Number(['swordsmen','cavalry'].includes(key)&&choices[2]===1)),
+      food:key==='cavalry'&&choices[1]===1?.03:0
     };
   }
   const gearCap = (c,key) => [1,3,6,9].filter(level=>levelOf(c,troopTypes[key][2])>=level).length;
@@ -180,10 +222,13 @@ const Campaign = (() => {
   function requirements(c) {
     const next = c.level+1;
     if (!advancement[next]) return [];
+    const storageLines = Object.entries(advancement[next]).filter(([key,n]) => n > storage(c,key))
+      .map(([key,n]) => [`${key==='grain'||key==='food'?'Granary':'Warehouse'} holds ${n} ${resources[key].toLowerCase()} (now ${storage(c,key)})`, false]);
     return [
       [`Town Center building level ${next-1}`,levelOf(c,'hall')>=next-1],
       [`${next===3?10:15} residents`,c.residents>=(next===3?10:15)],
       [`Provisioner building level ${next-1}`,levelOf(c,'oven')>=next-1],
+      ...storageLines,
       [labelCost(advancement[next]),canPay(c,advancement[next])]
     ];
   }
@@ -202,15 +247,57 @@ const Campaign = (() => {
     return true;
   }
 
+  function canMakeBolts(c) {
+    return active(c) && c.level>=3 && levelOf(c,'workshop') && free(c)>0 && !queued(c,'bolts','workshop')
+      && c.bolts+boltBatch.size<=boltBatch.cap && canPay(c,boltBatch.cost);
+  }
+  function canReinforce(c) {
+    return active(c) && c.level>=3 && levelOf(c,'wall') && !c.reinforced && free(c)>0 && !queued(c,'reinforce','wall') && canPay(c,reinforceCost);
+  }
+  // Brief 5.10: departure damage is a dice roll per building, scaling with dragon level, capped at 40%.
+  function departureDamage(c) {
+    const scale = 1 + (c.dragon.level-1)*.11;
+    return [Math.min(40, 15*scale), Math.min(40, 30*scale)];
+  }
+  function departureRisk(c) {
+    const [, most] = departureDamage(c);
+    return Object.entries(c.buildings).filter(([name,b]) => name!=='hall' && b.level && b.health<=most).map(([name]) => name);
+  }
+  function loseLevel(c, name) {
+    const b=c.buildings[name];
+    b.level=Math.max(1, Math.min(b.level-1, tierStarts[c.level-1]));
+  }
+  function departure(c) {
+    c.dragon.departed=true;c.demand=null;
+    const [least, most]=departureDamage(c);
+    for (const [name,b] of Object.entries(c.buildings)) {
+      if (name==='hall' || !b.level) continue;
+      b.health=Math.max(0,b.health-(least+random(c.seed^0x3414,c.draws++)*(most-least)));
+      if (b.health>0) continue;
+      if (defenses.includes(name)) { b.level=0; b.health=100; if (name==='wall') c.reinforced=false; }
+      else if (!['barracks','archery','stables'].includes(name)) loseLevel(c,name);
+    }
+    const total=troops(c);
+    let losses=Math.round(total*(.05+.05*random(c.seed^0x3415,c.draws++)));
+    if (total>=10) losses=Math.max(1,losses);
+    for (let n=0;n<losses;n++) {
+      const key=Object.keys(c.army).filter(k=>c.army[k].length).sort((a,b)=>c.army[b].length-c.army[a].length)[0];
+      if (!key) break;
+      c.army[key].pop(); c.residents--;
+    }
+    record(c,`The guardian departed. ${losses} ${losses===1?'soldier was':'soldiers were'} lost. The village must defend itself.`);
+  }
+
   function order(c, kind, key, days, cost={}, workers=0, extra={}) {
     pay(c,cost);
     c.queue.push({ kind,key,day:c.day+days,workers,...extra });
     return true;
   }
 
-  function action(c, verb, key) {
+  function action(c, verb, key = '') {
+    key = String(key);
     if (verb==='restore') return restorePoint(c,Number(key));
-    if (verb==='fight') return c.status==='active' && c.threat?.day<=c.day && fight(c);
+    if (verb==='fight') return false;   // battles resolve asynchronously: battleSnapshot, then applyBattle
     if (!active(c)) return false;
     if (verb==='build' && canBuild(c,key)) return order(c,'build',key,2+c.buildings[key].level,buildCost(c,key),1);
     if (verb==='repair' && canRepair(c,key)) {
@@ -246,8 +333,11 @@ const Campaign = (() => {
       }
       return false;
     }
-    if (verb==='loadout' && c.gear[key]?.tier>=2 && c.army[key].length && !queued(c,'loadout',key)
-        && canPay(c,{equipment:1})) return order(c,'loadout',key,1,{equipment:1});
+    if (verb==='scout-invasion' && c.level===4 && c.invasionAt!==null && !c.invasionKnown && free(c)>0 && canPay(c,{food:3})
+        && !queued(c,'scout-invasion','watch') && c.day>=(c.invasionIntel?.day??0)+5) return order(c,'scout-invasion','watch',2,{food:3},1);
+    if (verb==='kit' && kitShares.map(String).includes(key)) { c.kitShare=Number(key); return true; }
+    if (verb==='bolts' && canMakeBolts(c)) return order(c,'bolts','workshop',boltBatch.days,boltBatch.cost,1);
+    if (verb==='reinforce' && canReinforce(c)) return order(c,'reinforce','wall',4,reinforceCost,1);
     if (verb==='stance' && ['guard','hunt','rest'].includes(key) && livingDragon(c)) {
       if (key==='rest' && c.threat?.wave===3) return false;
       c.dragon.stance=key; return true;
@@ -263,26 +353,17 @@ const Campaign = (() => {
       pay(c,{food:5}); c.dragon.reserve=Math.min(25,c.dragon.reserve+5); c.dragon.favor=Math.min(100,c.dragon.favor+6); return true;
     }
     if (verb==='demand' && c.demand && (key==='refuse' || key==='deliver' && canPay(c,c.demand.cost))) {
-      if (key==='deliver') { pay(c,c.demand.cost);c.dragon.favor=Math.min(100,c.dragon.favor+9); }
-      else c.dragon.favor=Math.max(0,c.dragon.favor-(c.altar.blessing==='trust'?7:9));
+      if (key==='deliver') {
+        pay(c,c.demand.cost);
+        c.dragon.favor=Math.min(100,c.dragon.favor+9+(hasHero(c,'Favor')?2:0));
+        c.dragon.buffUntil=c.day+3;
+      }
+      else c.dragon.favor=Math.max(0,c.dragon.favor-favorLoss(c,9));
       c.demand=null; c.demandAt=c.day+9; return true;
     }
     if (verb==='departure' && c.departure && ['keep','leave'].includes(key)) {
       c.departure=false; c.departureAt=c.day+8;
-      if (key==='leave') {
-        c.dragon.departed=true;c.demand=null;
-        for (const [name,b] of Object.entries(c.buildings)) {
-          if (name!=='hall' && b.level) {
-            b.health=Math.max(0,b.health-15-Math.floor(random(c.seed^0x3414,c.draws++)*16));
-            if (!b.health && defenses.includes(name)) b.level=0;
-          }
-        }
-        for (const units of Object.values(c.army)) if (units.length>=4) {
-          const losses=Math.floor(units.length*.1);
-          units.splice(0,losses);c.residents-=losses;
-        }
-        record(c,'The guardian departed. The village must defend itself.');
-      }
+      if (key==='leave') departure(c);
       return true;
     }
     if (verb==='bless' && Object.hasOwn(blessings,key) && c.day>=c.altar.lockedUntil && c.altar.blessing!==key) {
@@ -341,19 +422,30 @@ const Campaign = (() => {
         if(kit.tier===4)kit.mode=j.choice===1?'dragon':'field';
       }
       if (j.kind==='loadout') c.gear[j.key].mode=c.gear[j.key].mode==='dragon'?'field':'dragon';
+      if (j.kind==='bolts') { c.bolts=Math.min(boltBatch.cap,c.bolts+boltBatch.size); record(c,`The workshop finished ${boltBatch.size} dragonbane bolts.`); }
+      if (j.kind==='reinforce') { if (levelOf(c,'wall')) { c.reinforced=true; record(c,'The walls were reinforced.'); } }
       if (j.kind==='advance') {
         c.level++;
         c.journal.push(c.level);
         record(c,`Village Level ${c.level} reached. ${stories[c.level][0]} was added to the journal.`);
-        if(c.level===4){ c.invasionAt=c.day+48; c.raidAt=null;record(c,`The invasion begins on Day ${c.invasionAt}.`); }
+        if(c.level===3){ c.journal.push('sighting'); record(c,'A wyrm was sighted over the ridge. Flying raiders may follow at Level 4.'); }
+        if(c.level===4){
+          c.invasionAt=c.day+countdown;
+          c.invasionType=invasionTypes[Math.floor(random(c.seed^0x2be9,7)*3)];
+          c.raidAt=c.day+raidGaps[3]<=c.invasionAt-raidStop?c.day+raidGaps[3]:null;
+          record(c,`The invasion begins on Day ${c.invasionAt}. Scouts can learn what kind of force is coming.`);
+          scoutInvasion(c);
+        }
         reachedLevel=true;
       }
+      if(j.kind==='scout-invasion') scoutInvasion(c);
       if(j.kind==='scout' && c.threat?.day===j.attackDay){
         const guardian=livingDragon(c) && !c.effects.some(effect=>effect.key==='scout' && effect.until>=c.day);
         const roll=1+Math.floor(random(c.seed^0x65aa,c.draws++)*20);
         const total=roll+Number(c.altar.blessing==='watch')+3*Number(c.heroes.some(h=>h.specialty==='Scouting'))+Number(guardian);
         const dc=c.threat.wave===3?18:c.threat.wave?15:12;
         c.threat.intel={roll,total,dc,margin:total-dc};
+        if(c.threat.wave && total>=dc) c.invasionKnown=true;
         record(c,total>=dc?'The scout returned with reliable intelligence.':'The scout returned with incomplete intelligence.');
       }
       if(j.kind==='reward') {
@@ -420,28 +512,47 @@ const Campaign = (() => {
     if(supplied)pay(c,advanced);
     if(missed || !supplied){
       d.health=Math.max(0,d.health-1.2);
-      d.favor=Math.max(0,d.favor-(c.altar.blessing==='trust'?.6:.9));
+      d.favor=Math.max(0,d.favor-favorLoss(c,.9));
       c.dragonShortage++;
       if(c.dragonShortage===1)record(c,'The guardian missed part of its upkeep.');
     } else {
       c.dragonShortage=0;
-      if(d.favor>0)d.health=Math.min(dragonMax(c),d.health+(d.stance==='rest'?1.3:.3));
+      // Run 10 healing when fed: REGEN 4 x DRAGON_HEAL_MULT 0.5 x 0.45 = 0.9 a day; Rest heals 50% faster (brief 5.3).
+      if(d.favor>0)d.health=Math.min(dragonMax(c),d.health+.9*(d.stance==='rest'?1.5:1));
       if(c.stock.food>food && d.reserve<25){ const extra=Math.min(.25,25-d.reserve);c.stock.food-=extra;d.reserve+=extra; }
     }
-    if (d.favor>40 && troops(c)>2+d.level) d.favor=Math.max(40,d.favor-Math.min(.5,.04*(troops(c)-2-d.level)));
+    if (d.favor>40 && troops(c)>2+d.level) d.favor=Math.max(40,d.favor-favorLoss(c,Math.min(.5,.04*(troops(c)-2-d.level))));
     if (!d.health) { c.departure=false;c.demand=null;record(c,'The guardian fell. The campaign can continue.'); }
+  }
+
+  // Expected strength for the watch report. The battle itself draws its strength in the run 10 engine.
+  function expectedStrength(c, day, wave, flier) {
+    const field = wave ? (12+400*.105)*.95*1.95 : (12+day*.105)*.95*raidStrength[c.level-1]*(flier?.6:1);
+    const boss = wave===3 ? 42*.95*2.1 : flier ? 42*.95*flier : 0;
+    return { field: Math.round(field), boss: Math.round(boss) };
   }
 
   function openThreat(c) {
     const day=nextAttack(c);
     if(c.threat || day===null || day-c.day>4)return false;
-    const wave=c.invasionAt===null?0:c.wave+1;
-    const type=['horde','siege','wyrm'][Math.floor(random(c.seed^0x2be9, c.raidCount+c.wave*3)*3)];
-    const pressure=wave ? [0,56,71,84][wave] : [0,0,17,26,36][c.level]+Math.min(30,c.raidCount*3);
-    const field=Math.round(pressure*(.87+random(c.seed^0x67ba,day)*.26));
-    c.threat={ day,wave,type,field,boss:wave===3?125:!wave&&c.level>=3&&type==='wyrm'?28:0,intel:null };
-    record(c,`${wave?`Invasion wave ${wave}`:'Raiders'} expected on Day ${day}.`);
+    const isWave=c.invasionAt!==null && day===c.invasionAt;
+    const wave=isWave?c.wave+1:0;
+    let flier=0;
+    if(!isWave && c.level===4 && c.invasionAt!==null && c.wave===0 && day<=c.invasionAt-flyStop) flier=flyStrength[Math.min(c.flyRaids,flyStrength.length-1)];
+    const type=isWave?c.invasionType:flier?(c.flyRaids?'young dragon':'wyrm'):['raiders','raiders','raiders'][0];
+    const {field,boss}=expectedStrength(c,day,wave,flier);
+    c.threat={ day,wave,type,field,boss,flier,intel:null };
+    record(c,`${wave?`Invasion wave ${wave}`:flier?`Raiders with a ${type}`:'Raiders'} expected on Day ${day}.`);
     return true;
+  }
+
+  function scoutInvasion(c) {
+    const r=random(c.seed^0x51c7,c.draws++), r2=random(c.seed^0x51c8,c.draws++);
+    const roll=1+Math.floor(Math.max(r,r2)*20);   // flashback advantage (brief 9.4)
+    const total=roll+Number(c.altar.blessing==='watch')+3*Number(hasHero(c,'Scouting'));
+    c.invasionKnown = c.invasionKnown || total>=16;
+    c.invasionIntel={roll,total,dc:16,day:c.day};
+    record(c,c.invasionKnown?`Scouts identified the invasion: ${typeNames[c.invasionType]}.`:'Scouts could not identify the invasion force.');
   }
 
   function advance(c) {
@@ -475,108 +586,108 @@ const Campaign = (() => {
     return {pane:null,pause:c.shortage===1 || c.status!=='active'};
   }
 
-  function armyPower(c, dragonTarget=false, threat=null, round=0) {
-    return Object.entries(c.army).reduce((total,[key,units])=>{
-      const kit=c.gear[key];
-      const xp=units.reduce((a,b)=>a+Math.min(b,6),0);
-      const choices=kit.choices??[];
-      const modifier=kit.mode==='dragon' ? (dragonTarget?1.40:.90) : (dragonTarget?.18:1);
-      let special=0;
-      if(!dragonTarget && threat){
-        if(key==='archers'&&choices[0]===1&&choices[2]!==1&&round===1)special+=1;
-        if(key==='archers'&&choices[1]===1&&threat==='siege')special+=.65;
-        if(key==='spearmen'&&choices[0]===1&&threat==='horde')special+=.6;
-        if(key==='cavalry'&&choices[0]===1)special+=round===1?2.3:-.4;
-        if(choices[1]===0&&['archers','swordsmen'].includes(key)&&c.stock.equipment>0)special+=.3;
-        if(choices[1]===1&&key==='spearmen'&&c.stock.iron>0)special+=.4;
-      }
-      return total+(units.length*(troopTypes[key][5]+kit.tier*.8+special)+xp*.18)*modifier;
-    },0);
+  // Display estimate of soldier power in the run 10 engine (per soldier: type power x gear x veterancy x heroes).
+  // dragonTarget: power the kit carriers can turn on a dragon (only the anti-dragon kit can, under the air rule).
+  function armyPower(c, dragonTarget=false) {
+    const gearTable=[.15,.10,.06,.04], typeIndex={spearmen:0,archers:1,swordsmen:2,cavalry:3};
+    const vet=1+.02*veterancy(c);
+    let field=0, eligible=0, kitPower=0;
+    for (const [key,units] of Object.entries(c.army)) {
+      const tier=c.gear[key].tier, gm=1+gearTable.slice(0,tier).reduce((a,b)=>a+b,0);
+      const hero=1+(key==='archers'&&hasHero(c,'Archer damage')?.1:0)+(['spearmen','swordsmen'].includes(key)&&hasHero(c,'Infantry damage')?.1:0);
+      const each=(1.4+.24*typeIndex[key]+.21)*gm*vet*hero;
+      field+=units.length*each;
+      if (tier>=2) { eligible+=units.length; kitPower+=units.length*each; }
+    }
+    const kits=Math.round(c.kitShare*eligible), share=eligible?kits/eligible:0;
+    return dragonTarget ? kitPower*share*.85 : field-kitPower*share*.1;
   }
 
-  function fight(c) {
+  const veterancy = c => { const all=Object.values(c.army).flat(); return all.length?Math.min(3,Math.floor(all.reduce((a,b)=>a+b,0)/all.length/2)):0; };
+
+  // The snapshot the run 10 engine needs for one battle (campaign_battle.py, resolve_encounter).
+  function battleSnapshot(c) {
+    const t=c.threat, d=c.dragon;
+    return {
+      seed: (Math.imul(c.seed ^ 0x6a09e667, 31) + Math.imul(c.battles+1, 7919) + t.day) >>> 0,
+      day: c.day, level: c.level, wave: t.wave, invasionType: t.wave ? c.invasionType : null, flier: t.flier ?? 0,
+      army: Object.fromEntries(Object.entries(c.army).map(([k,u])=>[k,u.length])),
+      gear: Object.fromEntries(Object.entries(c.gear).map(([k,g])=>[k,g.tier])),
+      kitShare: c.kitShare, veterancy: veterancy(c),
+      wall: { level: levelOf(c,'wall'), health: c.buildings.wall.health }, reinforced: c.reinforced,
+      bastion: levelOf(c,'bastion'), towers: levelOf(c,'tower'), ballistae: levelOf(c,'ballista'), bolts: c.bolts,
+      hallHealth: c.buildings.hall.health,
+      dragon: { alive: livingDragon(c), level: d.level, health: d.health, favor: d.favor, reserve: d.reserve, stance: d.stance,
+        buff: c.day<=d.buffUntil },
+      heroes: c.heroes.map(h=>({ specialty:h.specialty, mode:h.mode, level:h.level, trait:h.trait, health:h.health })),
+      stocks: { grain: c.stock.grain, food: c.stock.food, timber: c.stock.timber, stone: c.stock.stone },
+      l2Grace: c.l2Grace
+    };
+  }
+
+  function applyBattle(c, r) {
     const t=c.threat;
-    let field=t.field, boss=t.boss;
+    if (!t || c.status!=='active') return false;
     const wall=c.buildings.wall, hall=c.buildings.hall;
-    const report={day:c.day,wave:t.wave,type:t.type,field,boss,wallBefore:wall.health,hallBefore:hall.health,
-      guardianBefore:c.dragon.health, rounds:[], casualties:emptyMap(troopTypes), repairs:[], plunder:{}, outcome:'stall'};
-    const threshold=t.wave?0:t.field*([0,.6,.6,.45,.30][c.level]);
-    let guardBuffer=wall.level*4, fallen=0;
-    const fortPower=()=>[['wall',1.4],['tower',3.4],['ballista',1],['bastion',4]].reduce((n,[key,m])=>n+levelOf(c,key)*c.buildings[key].health/100*m,0);
-    for(let round=1;round<=64;round++){
-      const roll=.85+random(c.seed^0x40d52,t.day*128+round)*.30;
-      const guardian=livingDragon(c)&&c.dragon.favor>0&&(c.dragon.stance!=='rest'||t.wave===3);
-      const stancePower=c.dragon.stance==='hunt'?1.18:1;
-      const bonus=guardian?(4+c.dragon.level*3)*c.dragon.health/dragonMax(c)*(.5+c.dragon.favor/120)*stancePower:0;
-      const heroes=c.heroes.filter(h=>h.mode!=='inside' && h.health>0);
-      const support=heroes.reduce((n,h)=>n+(h.trait===0?1.8:1.2)+h.level*.35,0);
-      const towardBoss=boss>0;
-      const air=towardBoss?(levelOf(c,'ballista')*4+armyPower(c,true)*.55+bonus*1.15)*roll:0;
-      const counter=(armyPower(c,false,t.type,round)*(towardBoss?.74:1)+fortPower()+support+(towardBoss?0:bonus))*roll;
-      const attack=(field*.26+boss*.095)*(2-roll);
-      const exposed=Math.max(0,attack-(armyPower(c)*.32+fortPower()*.55+bonus*.45+support));
-      const wallLoss=wall.level?Math.min(wall.health,exposed*.66):0;
-      wall.health=Math.max(0,wall.health-wallLoss);
-      if(wall.level && wall.health<=0){wall.level=0;wall.health=100;}
-      const breach=Math.max(0,exposed-guardBuffer);
-      guardBuffer=Math.max(0,guardBuffer-exposed*.38);
-      if(breach && (!wall.level || wall.health<42)){
-        for(const key of ['tower','ballista','bastion']){
-          const b=c.buildings[key];
-          if(!b.level)continue;
-          b.health=Math.max(0,b.health-breach*.16);
-          if(!b.health){b.level=0;b.health=100;}
-        }
-        if(!wall.level && !troops(c) && !guardian && !['tower','ballista','bastion'].some(key=>levelOf(c,key))) {
-          hall.health=Math.max(0,hall.health-breach*.38);
-        }
-      }
-      const protection=Object.entries(c.army).reduce((n,[key,units])=>n+(c.gear[key].tier>=3?units.length*(c.gear[key].choices?.[2]===1?.12:.08):0),0);
-      const armyHarm=Math.max(0,exposed*.10+(attack*.045)*(t.wave||!wall.level?1:.5)-protection);
-      fallen+=armyHarm;
-      const defender=Object.keys(c.army).find(key=>c.army[key].length);
-      if(fallen>=3 && defender){c.army[defender].shift();c.residents--;report.casualties[defender]++;fallen-=3;}
-      if(guardian)c.dragon.health=Math.max(0,c.dragon.health-(towardBoss?boss*.038:attack*(c.dragon.stance==='hunt'?.10:.07)));
-      for(const h of heroes)if(h.mode==='engage' || !wall.level)h.health=Math.max(0,h.health-attack*.06);
-      field=Math.max(0,field-counter);
-      boss=Math.max(0,boss-air);
-      if(boss && !t.wave && boss<=t.boss*.5)boss=0;
-      report.rounds.push({ round,roll,field,boss,wall:wall.level?wall.health:0,town:hall.health,guardian:c.dragon.health });
-      if(hall.health<=0){report.outcome='defeat';break;}
-      if(field<=threshold && boss<=0){report.outcome=t.wave?'repelled':'withdrawal';break;}
-      if(!t.wave && round>=16){report.outcome='breach';break;}
+    const report={day:c.day,wave:t.wave,type:t.type,field:r.enemy,boss:r.boss,wallBefore:levelOf(c,'wall')?wall.health:0,
+      hallBefore:hall.health,guardianBefore:c.dragon.health,rounds:r.rounds,casualties:emptyMap(troopTypes),repairs:[],plunder:{},
+      outcome:'repelled',engine:r.engine,duel:r.duel??null,counter:r.counter??null,kitRight:r.kitRight??null,
+      levelsLost:r.levelsLost,deadlock:r.deadlock??null,cause:r.cause??null,boltsBefore:c.bolts};
+    c.battles++;
+    for (const [key,n] of Object.entries(r.casualties)) {
+      const lost=Math.min(n,c.army[key].length);
+      c.army[key].splice(c.army[key].length-lost,lost); c.residents-=lost; report.casualties[key]=lost;
     }
+    if (r.wallDestroyed) {
+      for (const key of defenses) if (c.buildings[key].level) { c.buildings[key].level=0; c.buildings[key].health=100; }
+      c.reinforced=false;
+      record(c,'The walls fell. Every fortification must be rebuilt from Level 1.');
+    } else if (levelOf(c,'wall')) wall.health=r.wallAfter;
+    hall.health=r.hallAfter;
+    if (livingDragon(c)) c.dragon.health=r.dragonAfter;
+    c.bolts=r.boltsAfter;
+    for (const key of ['grain','food','timber','stone']) {
+      report.plunder[key]=Math.max(0,c.stock[key]-r.stocks[key]);
+      c.stock[key]=Math.min(c.stock[key],r.stocks[key]);
+    }
+    if (r.civDamage>0) for (const key of production) {
+      const b=c.buildings[key];
+      if (!b.level) continue;
+      b.health=Math.max(15,b.health-Math.min(40,r.civDamage*.5));
+      report.repairs.push(key);
+    }
+    for (let n=0;n<r.levelsLost;n++) {
+      const key=production.filter(k=>c.buildings[k].level>1).sort((a,b)=>c.buildings[b].level-c.buildings[a].level)[0];
+      if (!key) break;
+      c.buildings[key].level--; record(c,`${buildings[key][0]} lost a building level in the raid.`);
+    }
+    c.l2Grace=r.l2Grace;
+    c.heroes.forEach((h,i)=>{ h.health=Math.max(0,h.health-(r.heroDamage[i]??0)); });
+    const fallen=c.heroes.filter(h=>h.health<=0);
+    for (const h of fallen) record(c,`The hero specializing in ${h.specialty.toLowerCase()} fell. A new hero must be summoned from Level 1.`);
     c.heroes=c.heroes.filter(h=>h.health>0);
-    report.wallAfter=wall.level?wall.health:0;report.hallAfter=hall.health;report.guardianAfter=c.dragon.health;
-    if(!t.wave && report.outcome!=='defeat' && (report.hallAfter<report.hallBefore || !wall.level)){
-      for(const key of ['grain','food','timber','stone']){
-        const protectedAmount=key==='food'?Math.max(8,3*rations(c)):8;
-        const amount=Math.max(0,Math.min(c.stock[key]-protectedAmount,c.stock[key]*.15));
-        c.stock[key]-=amount;report.plunder[key]=amount;
-      }
-      for(const key of ['farm','oven','wood','quarry']){
-        const b=c.buildings[key];
-        const loss=Math.min(28,8+t.field*.22);
-        b.health=Math.max(15,b.health-loss);
-        if(b.health<=30 && b.level>1)b.level--;
-        report.repairs.push(key);
-      }
+    if (r.status==='defeat') report.outcome='defeat';
+    else if (t.wave) report.outcome=r.deadlock?'held':'repelled';
+    else report.outcome=r.safetyNet?'breach':r.breached?'breach':'withdrawal';
+    if (report.outcome!=='defeat') {
+      for (const key of Object.keys(c.army)) c.army[key]=c.army[key].map(xp=>Math.min(6,xp+1));
+      if (livingDragon(c) && report.guardianBefore>c.dragon.health) c.dragon.victories++;
     }
-    if (['repelled','withdrawal'].includes(report.outcome)){
-      for(const key of Object.keys(c.army))c.army[key]=c.army[key].map(xp=>Math.min(6,xp+1));
-      if(livingDragon(c) && report.guardianAfter<report.guardianBefore)c.dragon.victories++;
-    }
+    if (t.flier) c.flyRaids++;
     c.reports.push(report);
-    if(report.outcome==='stall' || report.outcome==='defeat')c.status=report.outcome;
-    else if(t.wave){
+    if (report.outcome==='defeat') { c.status='defeat'; record(c,`${t.wave?`Invasion wave ${t.wave}`:'Raid'} · Town Center destroyed.`); }
+    else if (t.wave) {
       c.wave=t.wave;
-      if(c.wave===3){c.status='victory';c.invasionAt=null;}
-      else c.invasionAt=c.day+12;
+      if (c.wave===3) { c.status='victory'; c.invasionAt=null; }
+      else c.invasionAt=c.day+waveGap;
+      c.raidAt=null;
     } else {
-      c.raidCount++; c.raidAt=c.day+raidGaps[c.level-1];
+      c.raidCount++;
+      const next=c.day+raidGaps[c.level-1];
+      c.raidAt=c.level===4 && c.invasionAt!==null && next>c.invasionAt-raidStop ? null : next;
     }
-    if(c.status!=='stall')c.threat=null;
-    record(c,`${t.wave?`Invasion wave ${t.wave}`:'Raid'} · ${report.outcome}.`);
+    c.threat=null;
+    if (report.outcome!=='defeat') record(c,`${t.wave?`Invasion wave ${t.wave}`:'Raid'} · ${report.outcome}.`);
     return true;
   }
 
@@ -600,24 +711,27 @@ const Campaign = (() => {
     if(!obj(c.dragon)||!['reserve','health','favor','victories','level'].every(key=>number(c.dragon[key]))
       ||!['guard','hunt','rest'].includes(c.dragon.stance)||!obj(c.altar)||!int(c.altar.lockedUntil))return false;
     if(!['queue','reports','log','heroes','eventHistory','effects','journal'].every(key=>Array.isArray(c[key])))return false;
-    if(!c.queue.every(j=>obj(j)&&int(j.day)&&int(j.workers)&&['build','repair','train','recruit','gear','loadout','advance','scout','reward','clue','demobilize'].includes(j.kind)
+    if(!number(c.bolts)||typeof c.reinforced!=='boolean'||!kitShares.includes(c.kitShare)||!int(c.flyRaids)||typeof c.l2Grace!=='boolean'||!int(c.battles)
+      ||(c.invasionType!==null&&!invasionTypes.includes(c.invasionType))||typeof c.invasionKnown!=='boolean'||!number(c.dragon.buffUntil))return false;
+    if(!c.queue.every(j=>obj(j)&&int(j.day)&&int(j.workers)&&['build','repair','train','recruit','gear','loadout','advance','scout','scout-invasion','reward','clue','demobilize','bolts','reinforce'].includes(j.kind)
         && (['build','repair'].includes(j.kind)?Object.hasOwn(buildings,j.key):['train','gear','loadout'].includes(j.kind)?Object.hasOwn(troopTypes,j.key):j.kind==='reward'?Object.hasOwn(resources,j.key)&&number(j.amount):typeof j.key==='string')))return false;
     if(!c.heroes.every(h=>obj(h)&&typeof h.specialty==='string'&&int(h.level)&&number(h.health)&&[0,1,2].includes(h.trait)&&['inside','fortifications','engage'].includes(h.mode)))return false;
     const o=c.altar.offer;
     if(o&&(!obj(o)||!Array.isArray(o.options)||!o.options.every(x=>Object.hasOwn(categories,x))||!validCost(o.cost)||!int(o.rerolls)||o.rerolls>3||o.arrival!==undefined&&(!int(o.arrival)||![0,1,2].includes(o.trait))
       ||o.category!==null&&!Object.hasOwn(categories,o.category)))return false;
     if(c.threat&&(!obj(c.threat)||!int(c.threat.day)||!int(c.threat.wave)||!number(c.threat.field)||!number(c.threat.boss)
-      ||!['horde','siege','wyrm'].includes(c.threat.type)))return false;
+      ||typeof c.threat.type!=='string'))return false;
     if(!['eventAt','eventDraws','raidCount','shortage'].every(k=>int(c[k])))return false;
     if(c.event&&(!obj(c.event)||!int(c.event.offered)||!int(c.event.due)||!Object.hasOwn(CampaignEvents.roster,c.event.id)))return false;
     if(!c.reports.every(r=>obj(r)&&int(r.day)&&int(r.wave)&&r.wave<=3&&typeof r.outcome==='string'
-        &&Array.isArray(r.rounds)&&r.rounds.every(round=>obj(round)&&['round','field','boss','wall','town'].every(k=>number(round[k])))
+        &&Array.isArray(r.rounds)&&r.rounds.every(round=>obj(round)&&['round','field','boss'].every(k=>number(round[k])))
         &&validCost(r.plunder)&&obj(r.casualties)&&Object.keys(troopTypes).every(k=>int(r.casualties[k])))
       ||!c.eventHistory.every(e=>obj(e)&&int(e.day)&&int(e.offered)&&Object.hasOwn(CampaignEvents.roster,e.id)&&typeof e.result==='string')||!c.log.every(e=>obj(e)&&int(e.day)&&typeof e.text==='string'))return false;
     return isPoint || obj(c.checkpoints)&&Object.keys(c.checkpoints).every(l=>['2','3','4'].includes(l)&&validate(c.checkpoints[l],true));
   }
 
-  return { start, resources, jobs, buildings, troopTypes, equipment, advancement, stories, blessings, categories, traits,
+  return { start, normalize, battleSnapshot, applyBattle, expectedStrength, departureRisk, departureDamage, canMakeBolts, canReinforce,
+    kitShares, boltBatch, reinforceCost, invasionTypes, typeNames, counters, specialtyEffects, veterancy, hasHero, resources, jobs, buildings, troopTypes, equipment, advancement, stories, blessings, categories, traits,
     canBuild, canRepair, canTrain, canRecruit, canSummon, canAdvance, buildCost, repairCost, gearCost, gearCap, summonCost, requirements,
     troops, beds, free, garrison, militaryLoad, levelOf, labelCost, livingDragon, dragonMax, nextAttack, queued, active,
     canPay, pay, add, record, random, order, rations, storage, rank, armyPower, advance, action, validate };

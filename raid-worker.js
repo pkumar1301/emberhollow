@@ -3,7 +3,7 @@ let engine;
 
 async function loadEngine() {
   importScripts(runtimeUrl + 'pyodide.js');
-  const sources = ['dv_engine.py', 'first_raid.py', 'run10.json'];
+  const sources = ['dv_engine.py', 'first_raid.py', 'campaign_battle.py', 'run10.json'];
   const [python, files] = await Promise.all([
     self.loadPyodide({ indexURL: runtimeUrl }),
     Promise.all(sources.map(async name => {
@@ -21,6 +21,7 @@ import json
 import sys
 sys.path.insert(0, "/home/pyodide")
 from emberhollow_engine.first_raid import scout_first_raid, resolve_first_raid
+from emberhollow_engine.campaign_battle import resolve_encounter
 
 def dispatch_raid(action, payload):
     snapshot = json.loads(payload)
@@ -28,6 +29,8 @@ def dispatch_raid(action, payload):
         result = scout_first_raid(snapshot)
     elif action == "resolve":
         result = resolve_first_raid(snapshot, compare=True)
+    elif action == "campaign":
+        result = resolve_encounter(snapshot)
     else:
         raise ValueError("Unknown raid action")
     return json.dumps(result, allow_nan=False)

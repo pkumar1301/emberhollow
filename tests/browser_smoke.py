@@ -132,6 +132,11 @@ def main():
             page.evaluate("document.querySelectorAll('dialog[open]').forEach(d => d.close())")
             page.click("#menu")
             page.click("#settings button[data-action='checkpoint']")
+            # The practice village starts on Day 32; the raid arrives on Day 36 and resolves as the day advances.
+            for _ in range(6):
+                if page.evaluate("village.day >= 36"):
+                    break
+                page.click("#nextDay")
             page.wait_for_function("village.result !== null", timeout=120000)
             check("first raid checkpoint resolves", page.evaluate("['won','defeat'].includes(village.result.status)"))
 

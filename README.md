@@ -1,5 +1,23 @@
 # Emberhollow · The Last Hearth
 
+**Status:** playable through Level 4, in progress. Raids, the invasion countdown and three invasion waves work; encounters are still being added.
+
+**[Play Emberhollow on GitHub Pages](https://pkumar1301.github.io/emberhollow/)**
+
+![The Emberhollow village backdrop used in the game](village-panorama.png)
+
+*The village art the game is played over. An in-game screenshot is still to come.*
+
+A fantasy village strategy game in the browser. Today you can rebuild the settlement, survive the opening raid, grow the village to Level 4 and fight off a three-wave invasion, with profiles and autosaves. Next: more encounters.
+
+## How I built this
+
+- JavaScript front end with plain HTML and CSS, no build step.
+- Every battle is resolved by a frozen Python engine (`dv_engine.py` with `run10.json`), run in a browser worker through Pyodide.
+- Tests: `python3 -m unittest discover -s tests -p "test_*.py"`, plus Node campaign tests, scripted full-campaign runs and Playwright browser checks. GitHub Actions runs them on every push.
+
+---
+
 Rebuild the settlement, survive the opening raid, and develop the village through Level 4. The local campaign includes recurring raids, the invasion countdown, three invasion waves, and victory and defeat outcomes. The campaign opens with an illustrated prologue. All encounters can be played through their text and choices.
 
 ## Play locally
